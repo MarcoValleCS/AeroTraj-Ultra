@@ -1,0 +1,34 @@
+# AeroTraj-Ultra (FlightBERT++ V3) - environment
+# Python 3.12.7 (Anaconda base, Windows 11) - CUDA 12.6 wheel
+#
+#   pip install -r requirements.txt
+#
+# NOTE on numpy: pyopensky>=2.17 requires numpy>=2.0.2, but the Anaconda
+# matplotlib/numexpr/bottleneck binaries shipped with the base image are built
+# against the numpy 1.x C-ABI and crash with "A module that was compiled using
+# NumPy 1.x cannot be run in NumPy 2.x".  The combination below is the one
+# verified to import cleanly (numpy 2.2.6 + pip-upgraded matplotlib/numexpr/
+# bottleneck).  Do NOT let pip downgrade numpy back to 1.26.x.
+#
+#   pip install --no-deps matplotlib==3.11.2 numexpr==2.14.2 bottleneck==1.6.0
+#   pip install numpy==2.2.6
+
+torch==2.6.0+cu126
+numpy==2.2.6
+pandas==3.0.6
+pyarrow==26.0.0
+pyopensky==2.17
+scipy==1.18.1
+matplotlib==3.11.2
+numexpr==2.14.2
+bottleneck==1.6.0
+minio==7.2.20
+trino==0.340.0
+httpx==0.28.1
+requests==2.34.2
+stamina==26.0.0
+
+# torch.compile on Windows needs the community Triton build (the official
+# `triton` wheel is Linux-only).  Without it the training silently falls back
+# to eager mode and is ~1.5x slower.
+triton-windows==3.2.0.post21; sys_platform == "win32"

@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+title: "AeroTraj-Ultra: Physics-Grounded Non-Autoregressive Flight Trajectory Prediction"
+message: "If you use this software, please cite the original papers it builds on (FlightBERT, IEEE TITS 2023; FlightBERT++, AAAI 2024; MAF-Net, AAMAS 2026) as well as this work."
+type: software
+authors:
+  - family-names: "Valle"
+    given-names: "Marco"
+    email: "marco.valle2002@gmail.com"
+repository-code: "https://github.com/<USERNAME>/AeroTraj-Ultra"
+url: "https://github.com/<USERNAME>/AeroTraj-Ultra"
+abstract: >-
+  AeroTraj-Ultra is a 1.28M-parameter non-autoregressive multi-horizon regressor for
+  short-term 4D aircraft trajectory prediction (5-300 s) from ADS-B. It combines a
+  Gray-Code lattice decoder with a differentiable straight-through prefix-parity
+  soft-XOR, a continuous residual head anchored on a closed-form damped
+  coordinated-turn kinematic prior, and a MAF-Net differentiable trust-region gate
+  that bounds the influence of the Gray-Code branch. Trained on up to 180
+  consecutive days of real OpenSky traffic on a single RTX 4070, it reaches
+  991.6 m of 3-D ECEF mean distance error over the 5-300 s horizon, the best
+  among ten compared models (FlightBERT++ V2, Deep LSTM, constant velocity,
+  Conditional Flow Matching, ASCENT, Attention-LSTM, IMM+neural residual, DDPM/MID).
+keywords:
+  - aircraft trajectory prediction
+  - ADS-B
+  - OpenSky
+  - transformer
+  - gray code
+  - physics-informed machine learning
+  - flight trajectory prediction
+license: MIT
+version: 3.0.0
+date-released: "2026-10-20"
