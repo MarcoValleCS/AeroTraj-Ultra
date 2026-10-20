@@ -130,6 +130,13 @@ rate, integrated on the WGS-84 ellipsoid with latitude-corrected metres-per-degr
   branch may pull the prediction:
   `pred = pred_cont + α ⊙ tanh((pred_gc − pred_cont)/σ) ⊙ σ`, with `α = σ(MLP([dec, kin_disp]))`.
 
+**Multi-hypothesis head (optional, model.n_modes).** K learnable mode queries (DETR/ASCENT
+style) are appended to the decoder sequence and rendered *invisible* to the horizon queries by
+an attention mask, so the deterministic path is unchanged; each mode then acts as a per-mode
+bias on the horizon features, decoded by a shared head into a residual on the physics prior.
+Supervision is winner-takes-all with a ranking term and an auxiliary term on all modes. It
+costs +3,5 % parameters and +3 % training time and yields a 36 % lower *oracle* minADE@8.
+
 **Loss.**
 $$ \mathcal L=\underbrace{2.5}_{\text{pos}}\mathcal L_{\text{Smooth-L1}}
 +\underbrace{0.6}_{\text{vel}}\mathcal L_{\text{Smooth-L1}}
@@ -209,7 +216,46 @@ MDE = 3-D ECEF mean distance error (metres). `minADE@K` is the *oracle* best-of-
   despite using the same features: on en-route traffic with 60 s of history and no intent
   information, regression capacity dominates representation.
 
-### 4.2 Effect of the amount of data (identical recipe)
+### 4.2 Multi-hypothesis head (uncertainty without a generative model)
+
+The dominant residual error at 60–300 s is **epistemic**: the best-of-K of a generative model
+is far better than its single draw (CFM: 983.5 m vs 1 704.3 m), i.e. the uncertainty is about
+*which manoeuvre* the aircraft will fly. `AeroTraj-Ultra` can capture the same effect with an
+**additive** head, leaving the deterministic path untouched:
+
+* `K = 8` learnable **mode queries** (DETR/ASCENT style) are appended to the decoder sequence;
+* an **attention mask** keeps them invisible to the horizon queries, so the deterministic
+  prediction is *bit-identical* to the single-hypothesis model (verified: max deviation
+  1.9e-6, i.e. float32 noise);
+* each mode acts as a per-mode bias on the horizon features and a shared head decodes it into
+  a **residual on the physics prior** → every hypothesis stays kinematically consistent;
+* a **winner-takes-all** loss supervises only the closest hypothesis, plus a ranking term and
+  a down-weighted auxiliary term on all modes (anti-collapse).
+
+| Model | deterministic MDE | oracle minADE@K | score-selected MDE | params | s/epoch |
+|---|---:|---:|---:|---:|---:|
+| AeroTraj-Ultra (deterministic) | 991,6 | — | — | 1 276 839 | 28,3 |
+| **AeroTraj-Ultra + multi-hypothesis (K=8)** | **984,9** | **627,4** | 1 098,7 | 1 321 774 (+3,5 %) | 28,5–31 (+3 %) |
+| AeroTraj-Ultra + MC-dropout (K=10) | 995,6 (mean) | 905,4 | — | — | — |
+| CFM (FlowATC-style), K=10 | 1 704,3 | 983,5 | — | — | — |
+| ASCENT, K=8 | 2 348,9 | 1 088,8 | — | — | — |
+| DDPM / MID, K=10 | 4 300,5 | 1 763,6 | — | — | — |
+
+**Findings.**
+
+* The multi-hypothesis head reaches **627,4 m of oracle minADE@8 — 36 % below the
+  deterministic prediction** and better than *every* generative baseline tested, at **+3 % of
+  training cost** and +3,5 % parameters, with **no change to the deterministic output**.
+* The mode set is genuinely diverse (mean-over-modes 1 507,8 m, no collapse) but the
+  individual hypotheses are weaker than the deterministic head, as expected when only the
+  closest one is supervised.
+* **The score head is not yet calibrated**: selecting the hypothesis with the highest score
+  gives 1 098,7 m, i.e. *worse* than simply using the deterministic output (984,9 m). The
+  oracle gain is therefore not yet operationally exploitable — this is exactly the
+  calibration step identified as the next priority (conformal, Mondrian-stratified by flight
+  phase), and it is the subject of ongoing work.
+
+### 4.3 Effect of the amount of data (identical recipe)
 
 | Dataset | Train days | Unique flights | MDE, 5 s → 180 s | MDE, 5 s → 600 s |
 |---|---:|---:|---:|---:|
@@ -224,7 +270,7 @@ Doubling the data from 40 to 90 days reduces the error by **17.2 % at the 600 s 
 1.8 % at 180 s**: the extra data buys accuracy where the trajectory is uncertain (long horizon,
 route divergence) and nothing where the error is dominated by sensor quantisation.
 
-### 4.3 Where the remaining error comes from
+### 4.4 Where the remaining error comes from
 
 Measured on the held-out set:
 
@@ -236,7 +282,7 @@ Measured on the held-out set:
   dominated by the unknown intent (turn left / right / continue), which is *epistemic* and is
   exactly what the generative models capture with their best-of-K spread.
 
-### 4.4 Training efficiency
+### 4.5 Training efficiency
 
 The model is **launch-bound**, not compute-bound (1.28 M parameters, 144-dim, ~600 kernel
 launches per forward). Three exact optimisations plus `torch.compile` give a **1.9×** speed-up:

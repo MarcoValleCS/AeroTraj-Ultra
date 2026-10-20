@@ -231,33 +231,32 @@ Le priorità sono state riviste dopo il benchmark della §6, che ha **smentito d
 iniziali: (i) la finestra di input non è il collo (l'errore a 5 s è sotto il rumore
 quantizzato dell'ancora), (ii) l'ensembling tra architetture diverse peggiora la previsione.
 
-1. **Testa multi-iperspettrale sulla testa esistente** — *il margine più grande*. Il benchmark
-   mostra che a 60–300 s l'errore residuo è **epistemico** (best-of-K del CFM 983,5 m contro
-   1 704,3 m del singolo draw): l'incertezza è su *quale manovra* verrà eseguita. Aggiungere
-   K=8 teste ausiliarie che condividono encoder e decoder (uscita parametrica, loss
-   winner-takes-all + ausiliaria), mantenendo la testa deterministica come output operativo,
-   è un'aggiunta e non una ristrutturazione. Misurato: MC-dropout sul modello attuale dà già
-   minADE@10 = 905,4 m, quindi la dispersione multi-iperspettrale è già parzialmente accessibile.
-2. **Calibrazione dell'incertezza** (conformal, tipo Mondrian con strati per fase di volo) a valle
-   del punto 1: è il deliverable per il conflict detection ed è la lacuna indicata in
-   letteratura.
-3. **Gate MAF-Net tarato sull'orizzonte**: la `trust_sigma` fissa è quasi disattivata sugli
+0. ~~**Testa multi-iperspettrale**~~ — **implementata** (§6.4): 8 mode query mascherate,
+   loss winner-takes-all + ausiliaria. Il percorso deterministico resta invariato
+   (1,9e-6) e l'oracle minADE@8 scende a 627,4 m (−36 % sulla previsione deterministica),
+   il migliore tra tutti i modelli benchmarkati. Costo: +3,5 % parametri, +3 % tempo.
+   **Resta aperto**: la **calibrazione del punteggio** (la selezione(score) dà 1 098,7 m,
+   peggio dell'output deterministico) è il collo di bottiglia residuo.
+1. **Calibrazione dell'incertezza** (conformal, tipo Mondrian con strati per fase di volo) a valle
+   del punto 0: è il deliverable per il conflict detection ed è la lacuna indicata in
+   letteratura. Con il punteggio calibrato, l'oracle a 627,4 m diventa utilizzabile.
+2. **Gate MAF-Net tarato sull'orizzonte**: la `trust_sigma` fissa è quasi disattivata sugli
    orizzonti brevi (`σ(h) = σ₀·(0,02 + 0,98·h/600)` ⇒ a 5 s il gate può spostare la previsione
    di soli ~25 m) e l'ablation mostra che vale circa −12 m. Una `σ(h)` **appresa** o una fusione
    con pesi per orizzonte dovrebbe estrarre il vantaggio residuo.
-4. **Loss normalizzato per orizzonte**: `h_pos_norm = 0,04 + 0,96·(Δt/60 s)` schiaccia i
+3. **Loss normalizzato per orizzonte**: `h_pos_norm = 0,04 + 0,96·(Δt/60 s)` schiaccia i
    contributi brevi; una normalizzazione *relativa* (errore / distanza percorsa) bilancierebbe
    meglio 5 s e 10 min.
-5. **Finestra di input 12 → 20–24 punti** — da ri-valutare: l'ipotesi iniziale (denoising
+4. **Finestra di input 12 → 20–24 punti** — da ri-valutare: l'ipotesi iniziale (denoising
    dell'ancora) è **smentita dai dati** (rumore dell'ancora 75,4 m 1σ, errore del modello a 5 s
    61,2 m ⇒ il denoising è già implicito). Il beneficio residuo, se c'è, è nella stima del
    rateo di virata e quindi solo sugli orizzonti lunghi.
-6. **`track` (rotta) e `vertical_rate` grezzi** come feature separate: attualmente vx/vy/vz sono
+5. **`track` (rotta) e `vertical_rate` grezzi** come feature separate: attualmente vx/vy/vz sono
    ricostruiti da groundspeed+track, e la rotta è l'unica informazione diretta sulla direzione
    di marcia.
-7. **Copertura geografica mondiale** via `pyopensky.trino` con credenziali OpenSky: il bounding
+6. **Copertura geografica mondiale** via `pyopensky.trino` con credenziali OpenSky: il bounding
    box europeo limita la varietà di rotte e di regimi di volo.
-8. **Valutazione a terra (ground-based)** con `pyopensky.rest` / `pyopensky.trino` per un
+7. **Valutazione a terra (ground-based)** con `pyopensky.rest` / `pyopensky.trino` per un
    deployment reale.
 
 **Evidenze negative** (misurate, non ipotesi): ensembling `ours + FlightBERT++ V2` → 1 051,4 m
@@ -849,6 +848,37 @@ il dataset in GPU o aggiungere thread di prefetch **non** avrebbe dato nulla.
 & $PY bench_run.py --config config_90d_300s.json --compile none              # eager
 & $PY profile_training.py                                                  # A/B sul singolo step
 ```
+
+### 6.4 Testa multi-iperspettrale (`model.n_modes`)
+
+Implementazione e specifica formale in [`ARCHITECTURE.md`](ARCHITECTURE.md) §9. Configurazione
+`config_90d_300s_hyp.json` (K=8, `hyp_weight` 0,5), stessi dati e stessa ricetta del run
+deterministico.
+
+| Metrica | Deterministico | Multi-iperspettrale (K=8) |
+|---|---:|---:|
+| **MDE (output operativo)** | 991,6 m | **984,9 m** |
+| **minADE@8 (orakle)** | — | **627,4 m** (−36,3 %) |
+| minFDE@8 (orakle) | — | 2 269,9 m |
+| MDE selezionata dal punteggio | — | 1 098,7 m |
+| MDE media sulle 8 mode | — | 1 507,8 m |
+| Parametri | 1 276 839 | 1 321 774 (+3,5 %) |
+| Tempo per epoca | 28,3 s | 28,5–31 s (+3 %) |
+
+**Letture**
+
+1. **Il percorso deterministico è invariato per costruzione**: la maschera di attenzione rende
+   le mode query invisibili alle query degli orizzonti (deviazione massima 1,9e-6, rumore
+   float32). L'output operativo non peggiora (984,9 m, −0,7 % rispetto al run senza la testa).
+2. **L'oracle è il migliore in assoluto** fra tutti i modelli benchmarkati: 627,4 m contro
+   905,4 m (MC-dropout), 983,5 m (CFM), 1 088,8 m (ASCENT), 1 763,6 m (DDPM).
+3. **Le mode sono diverse** (media sulle mode 1 507,8 m, nessun collasso) ma ciascuna è più
+   debole della testa deterministica: coerente con una supervisione WTA in cui solo la vincitrice
+   riceve il gradiente pieno.
+4. **Il collo residuo è la calibrazione del punteggio**: selezionare l'ipotesi col punteggio più
+   alto dà 1 098,7 m, *peggio* dell'output deterministico (984,9 m). Il guadagno orakle non è
+   quindi ancora sfruttabile operativamente — è il prossimo obiettivo (calibrazione conformal
+   stratificata per fase di volo).
 
 ---
 

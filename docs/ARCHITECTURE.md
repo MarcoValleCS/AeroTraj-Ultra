@@ -280,7 +280,74 @@ keeping the gradient everywhere — no clipping, no dead units.
 
 ---
 
-## 9. Training objective
+## 9. Multi-hypothesis head (optional)
+
+The dominant residual error at 60–300 s is **epistemic**: the aircraft's *intent* (which
+manoeuvre) is not observable from a 60 s window. Generative models capture this by sampling a
+distribution; this model captures it with an additive head, at a fraction of the cost.
+
+**Architecture.** `K` learnable *mode queries* `e_1..e_K ∈ R^{D}` (DETR/ASCENT style) are
+appended to the decoder input sequence:
+
+```
+dec_in = [ prefix(11) ‖ horizon_queries(H) ‖ mode_queries(K) ]
+```
+
+A **float attention mask** `M ∈ R^{L×L}` (0 = attend, −∞ = block) is applied to the decoder
+self-attention:
+
+| rows \ columns | prefix | horizon | modes |
+|---|---|---|---|
+| prefix | ✓ | ✓ | ✗ |
+| horizon | ✓ | ✓ | ✗ |
+| modes | ✓ | ✓ | ✓ |
+
+Because the horizon rows cannot attend to the mode columns, the *deterministic* pathway is
+**mathematically unchanged** (verified: max deviation 1.9e-6, i.e. float32 rounding). The mode
+tokens are the only ones that see each other, so the K hypotheses cannot influence the
+operational prediction.
+
+**Decoding.** The mode token `m_m ∈ R^{D}` acts as a per-mode bias on the horizon features:
+
+$$ z_{m,h}=D_h+m_m,\qquad
+\hat y^{m}_h=P_h+\big(\mathrm{MLP}_{hyp}([z_{m,h}\,\|\,\kappa_h])\odot s_h\big) $$
+
+where `P_h` is the physics prior, `κ_h` the kinematic displacement and `s_h` the same
+horizon-dependent scale used by the continuous residual head. `MLP_hyp` is
+`Linear_{D+6→D} → GELU → Linear_{D→6}` with a **zero-initialised output layer**, so every
+hypothesis starts exactly at the physics solution. The hypotheses are therefore kinematically
+consistent by construction, like the deterministic output.
+
+A **score head** `MLP_{score}: D → 1` (bias initialised at −2, i.e. `α₀ ≈ 0.12`) produces a
+confidence per hypothesis.
+
+**Loss (winner-takes-all).** With `D(m)` the 3-D distance of hypothesis `m` to the truth:
+
+$$ m^\star=\arg\min_m \frac{1}{H}\sum_h D(m)_h $$
+
+$$ \mathcal L_{hyp}=\underbrace{\mathcal L_{reg}(\hat y^{m^\star},y)}_{\text{only the winner}}
++\underbrace{0.1}_{\text{aux}}\frac{1}{K}\sum_m \mathcal L_{reg}(\hat y^{m},y)
++\underbrace{0.1}_{\text{rank}}\mathrm{CE}\big(\alpha,\,m^\star\big) $$
+
+The auxiliary term is essential: without it the `K−1` losing hypotheses receive no gradient
+and degenerate (observed: the mean-over-modes error collapses onto the prior). The total
+objective becomes `L = L_hybrid + 0.5 · L_hyp`.
+
+**Cost and result** (90 days, 5–300 s, RTX 4070):
+
+| | deterministic | parameters | s/epoch | oracle minADE@8 |
+|---|---:|---:|---:|---:|
+| without the head | 991,6 m | 1 276 839 | 28,3 | — |
+| **with the head (K=8)** | **984,9 m** | 1 321 774 (+3,5 %) | 28,5–31 (+3 %) | **627,4 m** |
+
+The oracle gain is 36 % below the deterministic prediction and better than every generative
+baseline benchmarked (CFM 983,5 m, MC-dropout 905,4 m, ASCENT 1 088,8 m, DDPM 1 763,6 m).
+The score head is **not yet calibrated** (score-selected 1 098,7 m, worse than the
+deterministic output), so the oracle gain is not yet operationally exploitable.
+
+---
+
+## 10. Training objective
 
 $$
 \mathcal L=\underbrace{2.5}_{\text{pos}}\mathcal L_{\text{pos}}
@@ -310,7 +377,7 @@ with
 
 ---
 
-## 10. Parameter budget
+## 11. Parameter budget
 
 | module | parameters | share |
 |---|---:|---:|
@@ -328,6 +395,7 @@ with
 | horizon embedding | 1 872 | 0.1 % |
 | kinematic prior (3 learned scalars) | 3 | 0.0 % |
 | **total** | **1 276 983** | 100 % |
+| *(+ multi-hypothesis head, K=8)* | *+44 791* | *+3,5 %* |
 
 The three learned time constants of the physics prior are the *only* parameters of the
 prior: the propagator itself is parameter-free, which is what makes it usable as an
@@ -335,7 +403,7 @@ interpretable reference and as a residual anchor.
 
 ---
 
-## 11. Hyper-parameters
+## 12. Hyper-parameters
 
 | group | value |
 |---|---|
@@ -352,7 +420,7 @@ interpretable reference and as a residual anchor.
 
 ---
 
-## 12. Complexity
+## 13. Complexity
 
 The model is **launch-bound** rather than compute-bound. Per forward pass: ≈ 600 CUDA kernels,
 ≈ 0.1 GFLOP at batch 2 048. The Gray-Code decoder alone accounted for ≈ 330 launches before

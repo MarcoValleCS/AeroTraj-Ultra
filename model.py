@@ -536,6 +536,28 @@ class AeroTrajUltra(nn.Module):
         self.horizon_proj = nn.Linear(self.n_embd * 3, self.n_embd)
         self.dec_pos_emb = SinusoidalPositionalEncoding(self.n_embd, self.dropout, max_len=128)
 
+        # ---- multi-hypothesis head (optional) --------------------------- #
+        # K learnable "mode queries" (DETR/ASCENT style) are appended to the
+        # decoder sequence.  An attention mask keeps them INVISIBLE to the
+        # horizon queries, so the deterministic path is bit-identical to the
+        # single-hypothesis model; each mode then acts as a per-mode bias on
+        # the horizon features, and a shared head turns it into one full
+        # kinematic hypothesis (residual on the physics prior).
+        self.n_modes = int(m_cfg.get("n_modes", 0))
+        if self.n_modes > 0:
+            self.mode_queries = nn.Parameter(
+                torch.randn(self.n_modes, self.n_embd) * 0.02
+            )
+            self.hyp_head = nn.Sequential(
+                nn.Linear(self.n_embd + 6, self.n_embd), nn.GELU(), nn.Linear(self.n_embd, 6)
+            )
+            self.hyp_score = nn.Sequential(
+                nn.Linear(self.n_embd, self.n_embd), nn.GELU(), nn.Linear(self.n_embd, 1)
+            )
+            nn.init.zeros_(self.hyp_head[-1].weight)
+            nn.init.zeros_(self.hyp_head[-1].bias)
+            nn.init.constant_(self.hyp_score[-1].bias, -2.0)
+
         dec_layer = nn.TransformerDecoderLayer(
             d_model=self.n_embd,
             nhead=self.n_head,
@@ -646,8 +668,32 @@ class AeroTrajUltra(nn.Module):
         horizon_queries = self.horizon_proj(torch.cat([ctx_rep, h_emb, t_emb], dim=-1))  # [B, H, D]
 
         dec_full_in = self.dec_pos_emb(torch.cat([dec_prefix_emb, horizon_queries], dim=1))
-        dec_out = self.ln_f(self.decoder(tgt=dec_full_in, memory=enc_out))
-        dec_h = dec_out[:, -self.horizon :, :]  # [B, H, D]
+        hyp_pred = None
+        hyp_score = None
+        if self.n_modes > 0:
+            # ---- multi-hypothesis: append the mode queries to the sequence ----
+            mode_q = self.mode_queries.unsqueeze(0).expand(B, -1, -1)      # [B, K, D]
+            dec_full_in = self.dec_pos_emb(
+                torch.cat([dec_prefix_emb, horizon_queries, mode_q], dim=1)
+            )
+            # Attention mask: the horizon queries must NOT see the mode
+            # queries, so the deterministic path is bit-identical to the
+            # single-hypothesis model.  (rows: prefix / horizon / mode)
+            n_pref = dec_prefix_emb.shape[1]
+            L_pref, L_hor = n_pref, self.horizon
+            n_tot = L_pref + L_hor + self.n_modes
+            neg = float("-inf")
+            mask = torch.zeros(n_tot, n_tot, device=dec_full_in.device)
+            # prefix rows (0..L_pref-1): see prefix + horizon, not the modes
+            mask[:L_pref, L_pref + L_hor:] = neg
+            # horizon rows: see prefix + horizon, not the modes
+            mask[L_pref:L_pref + L_hor, L_pref + L_hor:] = neg
+            dec_out = self.ln_f(self.decoder(tgt=dec_full_in, memory=enc_out, tgt_mask=mask))
+            dec_h = dec_out[:, L_pref:L_pref + L_hor, :]                     # [B, H, D]
+            mode_tok = dec_out[:, L_pref + L_hor:, :]                         # [B, K, D]
+        else:
+            dec_out = self.ln_f(self.decoder(tgt=dec_full_in, memory=enc_out))
+            dec_h = dec_out[:, -self.horizon :, :]  # [B, H, D]
 
         # 4. Physics-Informed Kinematic Prior
         pred_kin = self.kinematic_prior(x_obs)  # [B, H, 6]
@@ -679,7 +725,17 @@ class AeroTrajUltra(nn.Module):
         gc_bounded_diff = torch.tanh((pred_gc - pred_cont) / sigma) * sigma
         pred_final = pred_cont + alpha_gate * gc_bounded_diff
 
-        return {
+        # 7. Multi-hypothesis head: each mode is a per-mode bias on the horizon
+        #    features, decoded by a shared head into a residual on the prior.
+        if self.n_modes > 0:
+            mode_bias = mode_tok.unsqueeze(2)                              # [B, K, 1, D]
+            h_feat = dec_h.unsqueeze(1) + mode_bias                        # [B, K, H, D]
+            h_aug = torch.cat([h_feat, kin_disp_norm.unsqueeze(1).expand(-1, self.n_modes, -1, -1)], dim=-1)
+            hyp_res = self.hyp_head(h_aug) * horizon_scale.unsqueeze(1)      # [B, K, H, 6]
+            hyp_pred = pred_kin.unsqueeze(1) + hyp_res                      # [B, K, H, 6]
+            hyp_score = self.hyp_score(mode_tok).squeeze(-1)                # [B, K]
+
+        out = {
             "pred": pred_final,
             "pred_kin": pred_kin,
             "pred_cont": pred_cont,
@@ -687,11 +743,66 @@ class AeroTrajUltra(nn.Module):
             "gc_probs": gc_probs_tuple,
             "gc_logits": gc_logits_tuple,
         }
+        if hyp_pred is not None:
+            out["hyp_pred"] = hyp_pred
+            out["hyp_score"] = hyp_score
+        return out
 
 
 # ==============================================================================
 # 6. Hybrid Physics-Constrained Multi-Horizon Loss (L_Ultra)
 # ==============================================================================
+def multi_hypothesis_wta_loss(
+    hyp_pred: torch.Tensor,
+    hyp_score: torch.Tensor,
+    target: torch.Tensor,
+    horizon_seconds: List[int],
+    attr_scales: torch.Tensor,
+    aux_weight: float = 0.1,
+    score_weight: float = 0.1,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Winner-takes-all multi-hypothesis loss (ASCENT / DETR style).
+
+    * only the hypothesis closest to the ground truth drives the regression;
+    * a cross-entropy term ranks that hypothesis first;
+    * an auxiliary (down-weighted) regression on EVERY hypothesis prevents the
+      non-winning ones from degenerating.
+
+    hyp_pred  : [B, K, H, 6]   hypothesis trajectories
+    hyp_score : [B, K]          predicted confidence per hypothesis
+    target    : [B, H, 6]
+    """
+    B, K, H, _ = hyp_pred.shape
+    d = hyp_pred - target.unsqueeze(1)                      # [B, K, H, 6]
+    lat_r = torch.deg2rad(target[:, :, 1]).unsqueeze(1)     # [B, 1, H]
+    mlon = 111320.0 * torch.cos(lat_r)
+    dist = torch.sqrt(
+        (d[..., 0] * mlon) ** 2 + (d[..., 1] * 111132.0) ** 2 + (d[..., 2] * 10.0) ** 2
+    )                                                       # [B, K, H] metres
+    mode_err = dist.mean(dim=2)                            # [B, K]
+    best = mode_err.argmin(dim=1)                          # [B]
+
+    # horizon-normalised regression error per hypothesis
+    t = torch.tensor(horizon_seconds, dtype=torch.float32, device=hyp_pred.device)
+    h_norm = (0.04 + 0.96 * (t / 60.0)).view(1, 1, -1, 1)
+    err = (hyp_pred - target.unsqueeze(1)) / (attr_scales.view(1, 1, 1, 6) * h_norm)
+    pos = F.smooth_l1_loss(err[..., :3], torch.zeros_like(err[..., :3]), beta=0.25,
+                           reduction="none").mean(dim=(2, 3))    # [B, K]
+    vel = F.smooth_l1_loss(err[..., 3:], torch.zeros_like(err[..., 3:]), beta=0.5,
+                           reduction="none").mean(dim=(2, 3))    # [B, K]
+    per_mode = pos + vel                                       # [B, K]
+
+    idx = best.view(B, 1, 1, 1).expand(B, 1, H, 6)
+    best_pred = hyp_pred.gather(1, idx).squeeze(1)              # [B, H, 6]
+    err_b = (best_pred - target) / (attr_scales.view(1, 1, 6) * h_norm.view(1, H, 1))
+    reg_best = F.smooth_l1_loss(err_b[..., :3], torch.zeros_like(err_b[..., :3]), beta=0.25) \
+        + F.smooth_l1_loss(err_b[..., 3:], torch.zeros_like(err_b[..., 3:]), beta=0.5)
+    aux = per_mode.mean()
+    ce = F.cross_entropy(hyp_score, best)
+    return reg_best + aux_weight * aux + score_weight * ce, best
+
+
 class HybridPhysicsConstrainedLoss(nn.Module):
     """
     Combines:
@@ -705,6 +816,10 @@ class HybridPhysicsConstrainedLoss(nn.Module):
         super().__init__()
         self.codec = codec
         tr_cfg = cfg["training"]
+        self.horizon_seconds: List[int] = list(cfg["window"]["horizon_seconds"])
+        self.hyp_weight = float(tr_cfg.get("hyp_weight", 0.5))
+        self.hyp_aux_weight = float(tr_cfg.get("hyp_aux_weight", 0.1))
+        self.hyp_score_weight = float(tr_cfg.get("hyp_score_weight", 0.1))
         self.bce_weight = float(tr_cfg["bce_weight"])
         self.gc_ste_weight = float(tr_cfg["gc_ste_weight"])
         self.cont_weight = float(tr_cfg["cont_weight"])
@@ -783,6 +898,20 @@ class HybridPhysicsConstrainedLoss(nn.Module):
             + self.physics_weight * loss_physics
         )
 
+        loss_hyp = None
+        if "hyp_pred" in outputs:
+            # multi-hypothesis term: winner-takes-all regression + ranking
+            loss_hyp, _ = multi_hypothesis_wta_loss(
+                outputs["hyp_pred"],
+                outputs["hyp_score"],
+                y_target,
+                self.horizon_seconds,
+                self.attr_scales,
+                aux_weight=self.hyp_aux_weight,
+                score_weight=self.hyp_score_weight,
+            )
+            total_loss = total_loss + self.hyp_weight * loss_hyp
+
         metrics_dict = {
             "total": total_loss.detach(),
             "pos": loss_pos.detach(),
@@ -791,6 +920,8 @@ class HybridPhysicsConstrainedLoss(nn.Module):
             "gc_ste": loss_gc_ste.detach(),
             "physics": loss_physics.detach(),
         }
+        if loss_hyp is not None:
+            metrics_dict["hyp"] = loss_hyp.detach()
         return total_loss, metrics_dict
 
 

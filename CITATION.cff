@@ -1,4 +1,4 @@
-cff-version: 1.2.0
+﻿cff-version: 1.2.0
 title: "AeroTraj-Ultra: Physics-Grounded Non-Autoregressive Flight Trajectory Prediction"
 message: "If you use this software, please cite the original papers it builds on (FlightBERT, IEEE TITS 2023; FlightBERT++, AAAI 2024; MAF-Net, AAMAS 2026) as well as this work."
 type: software
@@ -6,8 +6,8 @@ authors:
   - family-names: "Valle"
     given-names: "Marco"
     email: "marco.valle2002@gmail.com"
-repository-code: "https://github.com/<USERNAME>/AeroTraj-Ultra"
-url: "https://github.com/<USERNAME>/AeroTraj-Ultra"
+repository-code: "https://github.com/MarcoValleCS/AeroTraj-Ultra"
+url: "https://github.com/MarcoValleCS/AeroTraj-Ultra"
 abstract: >-
   AeroTraj-Ultra is a 1.28M-parameter non-autoregressive multi-horizon regressor for
   short-term 4D aircraft trajectory prediction (5-300 s) from ADS-B. It combines a

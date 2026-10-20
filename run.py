@@ -145,10 +145,13 @@ def evaluate_aerotraj_ultra(
 ) -> Tuple[float, Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """
     Evaluate AeroTraj-Ultra along with its internal ablation heads (pred_cont and pred_kin).
+    If the model carries a multi-hypothesis head, the K hypotheses are evaluated too
+    (oracle minADE@K, score-selected MDE and mean-over-modes MDE).
     """
     model.eval()
     losses = []
     preds_full, preds_cont, preds_kin, targs_all = [], [], [], []
+    hyp_preds, hyp_scores = [], []
 
     with torch.no_grad():
         for x_b, y_b in loader:
@@ -162,6 +165,9 @@ def evaluate_aerotraj_ultra(
             preds_cont.append(out["pred_cont"].cpu().numpy())
             preds_kin.append(out["pred_kin"].cpu().numpy())
             targs_all.append(y_b.cpu().numpy())
+            if "hyp_pred" in out:
+                hyp_preds.append(out["hyp_pred"].cpu().numpy())
+                hyp_scores.append(out["hyp_score"].cpu().numpy())
 
     loss_mean = float(torch.stack(losses).mean().item())
     pred_full_np = np.concatenate(preds_full, axis=0)
@@ -172,6 +178,24 @@ def evaluate_aerotraj_ultra(
     m_full = compute_trajectory_metrics(pred_full_np, targ_np, horizon_seconds)
     m_cont = compute_trajectory_metrics(pred_cont_np, targ_np, horizon_seconds)
     m_kin = compute_trajectory_metrics(pred_kin_np, targ_np, horizon_seconds)
+
+    if hyp_preds:
+        H = np.concatenate(hyp_preds, axis=0)                 # [N, K, H, 6]
+        S = np.concatenate(hyp_scores, axis=0)                # [N, K]
+        lat_r = np.radians(targ_np[:, None, :, 1])
+        mlon = 111320.0 * np.cos(lat_r)
+        d = H - targ_np[:, None, :, :]
+        dist = np.sqrt(
+            (d[..., 0] * mlon) ** 2 + (d[..., 1] * 111132.0) ** 2 + (d[..., 2] * 10.0) ** 2
+        )                                                        # [N, K, H] metres
+        per_mode_ade = dist.mean(axis=2)                        # [N, K]
+        m_full["minade_k_m"] = float(per_mode_ade.min(axis=1).mean())
+        m_full["minfde_k_m"] = float(dist[:, :, -1].min(axis=1).mean())
+        m_full["n_modes"] = int(H.shape[1])
+        m_full["mde_mean_over_modes_m"] = float(per_mode_ade.mean())
+        sel = S.argmax(axis=1)                                 # operational selection
+        idx = np.arange(len(targ_np))
+        m_full["mde_score_selected_m"] = float(per_mode_ade[idx, sel].mean())
     return loss_mean, m_full, m_cont, m_kin
 
 
@@ -390,7 +414,7 @@ def train_and_evaluate_all(
     for epoch in range(start_epoch, epochs + 1):
         model.train()
         t_ep = time.time()
-        ep_losses: Dict[str, List[float]] = {k: [] for k in ["total", "pos", "vel", "bce", "gc_ste", "physics"]}
+        ep_losses: Dict[str, List[Any]] = {k: [] for k in ["total", "pos", "vel", "bce", "gc_ste", "physics"]}
 
         for step_i, (x_b, y_b) in enumerate(train_loader, start=1):
             optimizer.zero_grad()
@@ -405,7 +429,7 @@ def train_and_evaluate_all(
                 scheduler.step()
 
             for k, v in m_dict.items():
-                ep_losses[k].append(v)   # tensors: kept on the GPU, synced once per epoch
+                ep_losses.setdefault(k, []).append(v)   # tensors: synced once per epoch
 
         val_loss, val_metrics, _, _ = evaluate_aerotraj_ultra(model, val_loader, criterion, horizon_seconds)
         val_mde_m = val_metrics["overall_mde_3d_m"]
@@ -668,6 +692,14 @@ def train_and_evaluate_all(
             f"{test_ultra['overall_mde_3d_m']:18.1f} m | "
             f"{-(1.0 - test_ultra['overall_mde_3d_m'] / test_fb_v2['overall_mde_3d_m']) * 100.0:+11.1f}%"
         )
+
+    if "minade_k_m" in test_ultra:
+        for row in benchmark_rows:
+            row["minade_k_m"] = round(test_ultra["minade_k_m"], 2)
+            row["minfde_k_m"] = round(test_ultra["minfde_k_m"], 2)
+            row["n_modes"] = test_ultra["n_modes"]
+            row["mde_score_selected_m"] = round(test_ultra["mde_score_selected_m"], 2)
+            row["mde_mean_over_modes_m"] = round(test_ultra["mde_mean_over_modes_m"], 2)
 
     df_bench = pd.DataFrame(benchmark_rows)
     df_bench.to_csv(results_dir / "horizon_benchmark.csv", index=False)
