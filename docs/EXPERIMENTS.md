@@ -235,11 +235,14 @@ quantizzato dell'ancora), (ii) l'ensembling tra architetture diverse peggiora la
    loss winner-takes-all + ausiliaria. Il percorso deterministico resta invariato
    (1,9e-6) e l'oracle minADE@8 scende a 627,4 m (−36 % sulla previsione deterministica),
    il migliore tra tutti i modelli benchmarkati. Costo: +3,5 % parametri, +3 % tempo.
-   **Resta aperto**: la **calibrazione del punteggio** (la selezione(score) dà 1 098,7 m,
-   peggio dell'output deterministico) è il collo di bottiglia residuo.
-1. **Calibrazione dell'incertezza** (conformal, tipo Mondrian con strati per fase di volo) a valle
-   del punto 0: è il deliverable per il conflict detection ed è la lacuna indicata in
-   letteratura. Con il punteggio calibrato, l'oracle a 627,4 m diventa utilizzabile.
+1. ~~**Calibrazione dell'incertezza**~~ — **implementata** (§6.5): la calibrazione conformal
+   Mondrian per fase di volo dà copertura esatta e uniforme sull'orizzonte con un raggio
+   **47 % più piccolo** rispetto a gonfiare la previsione deterministica (90 %: 1 413 m vs
+   2 675 m). **Resta aperto**: nessuna regola di selezione senza oracolo batte l'output
+   deterministico (la selezione(score) dà 1 098,7 m, peggio); per sfruttare l'oracle a
+   livello operativo serve un **score head ri-addestrato** (per esempio supervisione di
+   ranking anziché la sola CE sul winner, oppure un classificatore di «quale manovra»
+   addestrato su etichette di fase) invece di una calibrazione post-hoc.
 2. **Gate MAF-Net tarato sull'orizzonte**: la `trust_sigma` fissa è quasi disattivata sugli
    orizzonti brevi (`σ(h) = σ₀·(0,02 + 0,98·h/600)` ⇒ a 5 s il gate può spostare la previsione
    di soli ~25 m) e l'ablation mostra che vale circa −12 m. Una `σ(h)` **appresa** o una fusione
@@ -879,6 +882,49 @@ deterministico.
    alto dà 1 098,7 m, *peggio* dell'output deterministico (984,9 m). Il guadagno orakle non è
    quindi ancora sfruttabile operativamente — è il prossimo obiettivo (calibrazione conformal
    stratificata per fase di volo).
+
+### 6.5 Calibrazione dell'incertezza (`calibrate_uncertainty.py`)
+
+Obiettivo: trasformare il guadagno *orakle* della testa multi-iperspettrale in qualcosa di
+utilizzabile operativamente. Script: `calibrate_uncertainty.py` → `results_hyp/calibration.json`.
+
+**Q1 — Esiste una regola di selezione senza oracolo che batta l'output deterministico?**
+
+La regola è scelta sulla **validation** e poi applicata invariata al test (scelta out-of-sample).
+
+| Regola | Val MDE [m] | Test MDE [m] | vs deterministico |
+|---|---:|---:|---:|
+| **deterministico (scelta su validation)** | **1 008,8** | **982,7** | — |
+| media pesata per punteggio | 1 062,6 | 1 030,4 | +4,8 % |
+| consensus medoid | 1 093,3 | 1 059,3 | +7,8 % |
+| score-argmax | 1 119,3 | 1 098,7 | +11,8 % |
+| *orakle* (best-of-8) | — | *627,4* | *−36,1 %* |
+
+**Risposta: no.** Nessuna regola senza oracolo batte l'output deterministico, e la scelta fatta
+sulla validation (deterministico) si trasferisce correttamente al test. La testa
+multi-iperspettrale **non sostituisce** la stima puntuale: fornisce la *forma* dell'incertezza.
+
+**Q2 — L'insieme di ipotesi può diventare un set predittivo calibrato?**
+
+Sì: si tratta l'insieme delle 8 ipotesi come un ensemble e lo si gonfia con un raggio
+**conformal Mondrian** (stratificato per fase di volo: salita / crociera / discesa) calibrato
+sulla validation. La nonconformità è la distanza 3-D della verità all'ipotesi più vicina.
+
+| Livello nominale | Copertura (ensemble) | Raggio medio (ensemble) | Copertura (deterministico) | Raggio medio (deterministico) |
+|---:|---:|---:|---:|---:|
+| 80 % | 0,805 | **787 m** | 0,806 | 1 282 m |
+| 90 % | 0,903 | **1 413 m** | 0,903 | 2 675 m |
+| 95 % | 0,951 | **2 411 m** | 0,951 | 4 542 m |
+
+**Risultato**: la copertura è **esatta** e **uniforme lungo l'orizzonte** (0,905 a 5 s → 0,901 a
+300 s al livello 90 %), e il raggio dell'ensemble è **≈47 % più piccolo** di quello necessario
+per gonfiare la singola previsione deterministica alla stessa copertura. L'insieme delle ipotesi
+contiene quindi informazione utile *oltre* a quella del punto singolo: la sua ampiezza è
+sfruttabile per il conflict detection, dove serve una garanzia formale e non un punto.
+
+**Limite residuo**: il set è calibrato *sullo stesso* errore che si vuole coprire, quindi la
+garanzia è marginale (valida under exchangeability) e nonULA distribuzionalmente spostata; in
+un deployment reale il calibration set deve essere raccolto su un periodo rappresentativo.
 
 ---
 

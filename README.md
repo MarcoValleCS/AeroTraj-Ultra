@@ -16,7 +16,8 @@ OpenSky traffic, trained on a single GPU.**
 | **Model** | `AeroTrajUltra`, 1 276 839 parameters, ~0.6 GFLOP/step |
 | **Hardware** | 1× RTX 4070 (12 GB) — full 80-epoch run in ~25 min |
 | **Result** | **991.6 m** 3-D ECEF mean distance error (5 s–300 s) — best of 10 compared models |
-| **Code** | `model.py` (architecture) · `run.py` (training) · `bench_models.py` (literature replications) |
+| **Code** | `model.py` (architecture) · `run.py` (training) · `bench_models.py` (literature replications) | |
+| **Uncertainty** | multi-hypothesis head (K=8) + conformal calibration → certified 90 % band with a 47 % smaller radius |
 
 ---
 
@@ -249,11 +250,32 @@ is far better than its single draw (CFM: 983.5 m vs 1 704.3 m), i.e. the uncerta
 * The mode set is genuinely diverse (mean-over-modes 1 507,8 m, no collapse) but the
   individual hypotheses are weaker than the deterministic head, as expected when only the
   closest one is supervised.
-* **The score head is not yet calibrated**: selecting the hypothesis with the highest score
-  gives 1 098,7 m, i.e. *worse* than simply using the deterministic output (984,9 m). The
-  oracle gain is therefore not yet operationally exploitable — this is exactly the
-  calibration step identified as the next priority (conformal, Mondrian-stratified by flight
-  phase), and it is the subject of ongoing work.
+* **No oracle-free selection rule beats the deterministic head.** Four rules were compared
+  (score-argmax, consensus-medoid, score-weighted mean, deterministic+medoid blend); the
+  rule is *chosen on the validation split* and the choice transfers to the test split:
+
+  | selection rule | val MDE | test MDE | vs deterministic |
+  |---|---:|---:|---:|
+  | **deterministic (chosen on validation)** | **1 008,8** | **982,7** | — |
+  | score-weighted mean | 1 062,6 | 1 030,4 | +4,8 % |
+  | consensus medoid | 1 093,3 | 1 059,3 | +7,8 % |
+  | score-argmax | 1 119,3 | 1 098,7 | +11,8 % |
+
+  The head therefore does **not** replace the point estimate: it is an *uncertainty-shape*
+  provider, and the score head is not usable for selection.
+* **Where the head does pay off: certified uncertainty.** Treating the 8 hypotheses as an
+  ensemble and inflating it with a **Mondrian (phase-stratified) conformal radius** calibrated
+  on the validation split gives an *exact* and *horizon-uniform* coverage, with a radius
+  **≈47 % smaller** than inflating the single deterministic prediction:
+
+  | nominal | coverage (ensemble) | mean radius (ensemble) | coverage (deterministic) | mean radius (deterministic) |
+  |---:|---:|---:|---:|---:|
+  | 80 % | 0,805 | **787 m** | 0,806 | 1 282 m |
+  | 90 % | 0,903 | **1 413 m** | 0,903 | 2 675 m |
+  | 95 % | 0,951 | **2 411 m** | 0,951 | 4 542 m |
+
+  Per-horizon coverage at the 90 % level is 0,905 at 5 s and 0,901 at 300 s — the guarantee
+  holds uniformly along the horizon, which is what a conflict-detection use case requires.
 
 ### 4.3 Effect of the amount of data (identical recipe)
 
@@ -308,6 +330,7 @@ and gradients. Measured with `profile_training.py`.
 ├── bench_models.py          the 5 re-implemented literature models
 ├── bench_run.py             benchmark harness (train + evaluate + compare)
 ├── bench_experiments.py     post-hoc analyses (ensembles, MC-dropout, error floor)
+├── calibrate_uncertainty.py  conformal calibration of the multi-hypothesis ensemble
 ├── eval_ckpt.py             evaluate any checkpoint on any split
 ├── make_report.py           markdown/CSV report generator
 ├── profile_training.py      step-level A/B profiler

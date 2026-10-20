@@ -345,6 +345,21 @@ baseline benchmarked (CFM 983,5 m, MC-dropout 905,4 m, ASCENT 1 088,8 m, DDPM 1 
 The score head is **not yet calibrated** (score-selected 1 098,7 m, worse than the
 deterministic output), so the oracle gain is not yet operationally exploitable.
 
+**Certified uncertainty.** Treating the `K` hypotheses as an ensemble and inflating it with a
+Mondrian (flight-phase stratified) conformal radius calibrated on the validation split gives
+an *exact* and *horizon-uniform* coverage with a radius ≈47 % smaller than inflating the
+single deterministic prediction:
+
+| nominal | coverage | mean radius (ensemble) | mean radius (deterministic) |
+|---:|---:|---:|---:|
+| 80 % | 0,805 | 787 m | 1 282 m |
+| 90 % | 0,903 | 1 413 m | 2 675 m |
+| 95 % | 0,951 | 2 411 m | 4 542 m |
+
+The nonconformity score is the 3-D distance of the truth to the *closest* hypothesis,
+quantile-calibrated per stratum (climb / cruise / descent) at level `1−α`. See
+`calibrate_uncertainty.py` and `docs/EXPERIMENTS.md` §6.5.
+
 ---
 
 ## 10. Training objective
