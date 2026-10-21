@@ -333,7 +333,51 @@ inference, where the pool holds only past data.
   unnormalised context, was **24 % worse** than the base model. The context must be scaled and
   the projection warm-started, otherwise the retrieval signal swamps the other conditioning.
 
-### 4.4 Effect of the amount of data (identical recipe)
+### 4.4 Comparison with FlightPREV (the previous model of this project)
+
+The earlier model of this project — **FlightPREV**
+(<https://github.com/MarcoValleCS/flight>), a Transformer encoder with a multi-horizon
+head that learns a *residual with respect to a constant-velocity ballistic model*, with an
+auxiliary flight-phase task and learned categorical embeddings (aircraft type / operator /
+departure / arrival airports) — has been **re-implemented on the same OpenSky data**
+(`legacy_flightprev.py`, `run_legacy.py`) so that the two can be compared like for like:
+same 90-day dataset, same chronological splits, same horizon grid (extended from its native
+10–120 s to 5–300 s), same optimiser recipe, same metric.
+
+| Model | MDE | 5 s | 30 s | 60 s | 120 s | 300 s | params |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **AeroTraj-Ultra + retrieval** | **957,2** | **61,1** | **119,6** | **297,6** | **918,6** | **4 092,4** | 1,34 M |
+| AeroTraj-Ultra (base) | 991,6 | 61,2 | 122,3 | 308,0 | 952,2 | 4 243,8 | 1,28 M |
+| FlightBERT++ V2 | 1 219,9 | 68,0 | 179,1 | 420,9 | 1 210,0 | 5 025,6 | — |
+| Deep LSTM | 1 296,4 | 77,7 | 206,6 | 478,4 | 1 296,9 | 5 264,8 | — |
+| **FlightPREV (legacy, re-impl.)** | **1 495,8** | 102,8 | 188,4 | 470,9 | 1 395,2 | 6 466,5 | 3,44 M |
+| CV (Doppler) | 1 507,7 | 64,2 | 171,5 | 450,7 | 1 406,3 | 6 643,0 | — |
+| CFM (FlowATC-style) | 1 704,3 | 87,2 | 208,7 | 552,7 | 1 708,2 | 7 125,8 | — |
+| ASCENT | 2 348,9 | 105,7 | 523,9 | 1 144,9 | 2 646,8 | 8 426,0 | — |
+| Attention-LSTM | 3 170,0 | 100,4 | 508,8 | 1 105,0 | 2 967,1 | 14 694,6 | — |
+| DDPM / MID | 4 300,5 | 146,4 | 631,2 | 1 600,7 | 4 233,4 | 17 871,6 | — |
+
+**Findings.**
+
+* The new model is **36 % better than FlightPREV** on the same data, and the gap is
+  **uniform across the horizon** (40,6 % at 5 s, 36,5 % at 30 s, 36,8 % at 300 s) — it is a
+  genuinely better predictor, not a longer-horizon artefact.
+* FlightPREV, re-implemented on OpenSky, ends up **barely better than the constant-velocity
+  baseline** (1 495,8 m vs 1 507,7 m) despite 3,44 M parameters and 2,7× those of
+  AeroTraj-Ultra. Two structural reasons, both measured:
+  1. **Its normalisations hide the short horizons.** The residual is expressed in ENU units of
+     10 000 m, so with a Huber loss of δ = 0,1 (i.e. 1 000 m) an error of 100 m at 5 s is
+     *inside the linear region* and barely influences the gradient: the 5 s error stays at
+     102,8 m against the 61,1 m of AeroTraj-Ultra, whose loss normalises per horizon.
+  2. **The categorical priors it relies on do not exist in OpenSky.** The original learned
+     embeddings of aircraft type, operator and the departure/arrival airports; the OpenSky
+     competition data carries none of them, so they were replaced by two coarser geographic
+     embeddings (origin/destination area). This is an acknowledged **handicap** for the legacy
+     model, and it is the main reason the comparison must be read as
+     *"architecture + loss + priors on this dataset"*, not as *"old code versus new code"*.
+* The comparison is therefore favourable to the new model, and stated as such.
+
+### 4.5 Effect of the amount of data (identical recipe)
 
 | Dataset | Train days | Unique flights | MDE, 5 s → 180 s | MDE, 5 s → 600 s |
 |---|---:|---:|---:|---:|
@@ -348,7 +392,7 @@ Doubling the data from 40 to 90 days reduces the error by **17.2 % at the 600 s 
 1.8 % at 180 s**: the extra data buys accuracy where the trajectory is uncertain (long horizon,
 route divergence) and nothing where the error is dominated by sensor quantisation.
 
-### 4.5 Where the remaining error comes from
+### 4.6 Where the remaining error comes from
 
 Measured on the held-out set:
 
@@ -360,7 +404,7 @@ Measured on the held-out set:
   dominated by the unknown intent (turn left / right / continue), which is *epistemic* and is
   exactly what the generative models capture with their best-of-K spread.
 
-### 4.6 Training efficiency
+### 4.7 Training efficiency
 
 The model is **launch-bound**, not compute-bound (1.28 M parameters, 144-dim, ~600 kernel
 launches per forward). Three exact optimisations plus `torch.compile` give a **1.9×** speed-up:

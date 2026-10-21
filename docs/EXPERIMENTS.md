@@ -1016,6 +1016,59 @@ testa è la **banda di incertezza certificata** (conformal: raggio 1 190 m al 90
 Nota: la selezione migliora comunque (1 060 → 1 031 m con la regressione invece della CE), quindi
 ilTraining dello score head non è inutile — semplicemente non è sufficiente a colmare il gap.
 
+### 6.8 Confronto con FlightPREV (il modello precedente del progetto)
+
+Il modello precedente del progetto, **FlightPREV** (<https://github.com/MarcoValleCS/flight>),
+è stato re-implementato sui dati OpenSky (`legacy_flightprev.py`, `run_legacy.py`) per un
+confronto *like-for-like*: stesso dataset a 90 giorni, stessi split cronologici, stessa
+griglia di orizzonti (estesa dal suo 10–120 s nativo a 5–300 s), stessa ricetta di
+ottimizzazione, stessa metrica.
+
+**Architettura re-implementata** (`src/models.py`, arch `transformer`): proiezione delle feature
+per passo, positional embedding imparato, token `[CLS]`, token di contesto statico, Transformer
+encoder pre-LN/GELU (4 layer, d_model 256, 8 head, ff 768), pooling `[CLS, static,
+media(history)]`, teste `xy` (H×2 correzioni rispetto al modello balistico a velocità costante,
+m/10000), `z` (H correzioni di quota relativa, m/1000) e `phase` (task ausiliario crociera /
+salita / discesa a +60 s); loss Huber(δ=0,1) su xy + 0,3 su z + 0,1 CE sulla fase.
+3 440 682 parametri.
+
+**Adattamenti dichiarati**: i dati OpenSky non contengono tipo di velivolo, compagnia né
+aeroporti, quindi i 4 embedding categorici originali (`ac_type` 16, `operator` 12, `dep` 8,
+`arr` 8) sono sostituiti da **2 embedding sull'area geografica di origine/destinazione** del
+segmento (griglia 2°, 16 200 bucket). I target non sono smorzati con media mobile (a differenza
+dell'originale sul dataset italiano) per mantenere la metrica coerente col resto del progetto.
+
+**Risultato** (test 9 giorni, 2022-03-23 → 2022-03-31, MDE 3-D ECEF):
+
+| Modello | MDE | 5 s | 30 s | 60 s | 120 s | 300 s | parametri |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **AeroTraj-Ultra + retrieval** | **957,2** | **61,1** | **119,6** | **297,6** | **918,6** | **4 092,4** | 1,34 M |
+| AeroTraj-Ultra (base) | 991,6 | 61,2 | 122,3 | 308,0 | 952,2 | 4 243,8 | 1,28 M |
+| FlightBERT++ V2 | 1 219,9 | 68,0 | 179,1 | 420,9 | 1 210,0 | 5 025,6 | — |
+| Deep LSTM | 1 296,4 | 77,7 | 206,6 | 478,4 | 1 296,9 | 5 264,8 | — |
+| **FlightPREV (legacy, re-impl.)** | **1 495,8** | 102,8 | 188,4 | 470,9 | 1 395,2 | 6 466,5 | 3,44 M |
+| CV (Doppler) | 1 507,7 | 64,2 | 171,5 | 450,7 | 1 406,3 | 6 643,0 | — |
+| CFM (FlowATC-style) | 1 704,3 | 87,2 | 208,7 | 552,7 | 1 708,2 | 7 125,8 | — |
+| ASCENT | 2 348,9 | 105,7 | 523,9 | 1 144,9 | 2 646,8 | 8 426,0 | — |
+| Attention-LSTM | 3 170,0 | 100,4 | 508,8 | 1 105,0 | 2 967,1 | 14 694,6 | — |
+| DDPM / MID | 4 300,5 | 146,4 | 631,2 | 1 600,7 | 4 233,4 | 17 871,6 | — |
+
+**Letture**
+
+1. Il modello nuovo è **36 % migliore** di FlightPREV sugli stessi dati, con un gap **uniforme
+   sull'orizzonte** (40,6 % a 5 s, 36,5 % a 30 s, 36,8 % a 300 s): è un miglior predittore in
+   senso assoluto, non un artefatto dell'orizzonte lungo.
+2. FlightPREV re-implementato su OpenSky finisce **appena sopra la baseline a velocità
+   costante** (1 495,8 m vs 1 507,7 m) nonostante 3,44 M parametri. Due ragioni strutturali,
+   entrambe misurabili:
+   - **la normalizzazione nasconde gli orizzonti brevi**: il residuo è in unità ENU da 10 000 m,
+     quindi con Huber δ=0,1 (1 000 m) un errore di 100 m a 5 s sta *dentro* la zona lineare e
+     non spinge il gradiente; l'errore a 5 s resta a 102,8 m contro i 61,1 m di AeroTraj-Ultra,
+     che normalizza la loss per orizzonte;
+   - **i priori categorici che il modello usa non esistono in OpenSky** (handicap dichiarato).
+3. Il confronto va quindi letto come *"architettura + loss + priori su questo dataset"*, non
+   come *"codice vecchio contro codice nuovo"*.
+
 ---
 
 ## 7. Funzionalità e limiti noti

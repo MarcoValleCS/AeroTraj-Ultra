@@ -109,12 +109,54 @@ def main() -> None:
     e_vs = np.abs(Hh[..., 5].mean(axis=2) - obs_vs[:, None]) / 5.0
     r2 = e_turn + e_spd + e_vs
 
+    # ---- R4/R5: the retrieval consensus as the selection criterion ---- #
+    # The retrieval already proved to carry the intent signal (its own oracle
+    # was 900 m).  Here the K retrieved futures, expressed in the QUERY's local
+    # frame, define a consensus; the hypothesis closest to that consensus is the
+    # one that agrees with the typical behaviour of similar past aircraft.
+    ctx_all = []
+    with torch.no_grad():
+        loader2 = FastSlidingWindowBatchLoader(ds_te, batch_size=2048, shuffle=False, device=dev)
+        for x_b, _ in loader2:
+            ctx_all.append(pool.context(window_descriptor(x_b, POS_WEIGHT), x_b, k=K).cpu().numpy())
+    C = np.concatenate(ctx_all, axis=0)          # [N,K,H,4] (fwd, rgt, up, spd)
+
+    # the retrieved futures in the query's local frame -> global
+    o_lon = O[:, None, -1, 0][:, :, None]       # [N,1,1]
+    o_lat = O[:, None, -1, 1][:, :, None]       # [N,1,1]
+    o_alt = O[:, None, -1, 2][:, :, None]       # [N,1,1]
+    psi_q = np.arctan2(O[:, -1, 3], O[:, -1, 4])[:, None]      # [N,1]
+    sh, ch = np.sin(psi_q)[..., None], np.cos(psi_q)[..., None]
+    fwd, rgt = C[..., 0], C[..., 1]
+    dx_e = fwd * sh + rgt * ch
+    dy_n = fwd * ch - rgt * sh
+    gl = np.stack([
+        o_lon + dx_e / (111320.0 * np.cos(np.radians(o_lat))),
+        o_lat + dy_n / 111132.0,
+        o_alt + C[..., 2] / 10.0,
+    ], axis=-1)                                    # [N,K,H,3] retrieved futures (global)
+
+    # consensus: the per-horizon MEDIAN over the retrieved neighbours (robust)
+    cons = np.median(gl, axis=1)                  # [N,H,3]
+    # distance from each hypothesis to the consensus
+    dh2 = Hh[..., :3] - cons[:, None, :, :]
+    lat_c = np.radians(cons[:, None, :, 1])
+    mlon_c = 111320.0 * np.cos(lat_c)
+    d4 = np.sqrt((dh2[..., 0] * mlon_c) ** 2 + (dh2[..., 1] * 111132.0) ** 2
+                 + (dh2[..., 2] * 10.0) ** 2).mean(axis=2)       # [N,K]
+    # and to the NEAREST retrieved neighbour
+    d5 = np.sqrt((dh2[..., 0] * mlon_c) ** 2 + (dh2[..., 1] * 111132.0) ** 2
+                 + (dh2[..., 2] * 10.0) ** 2).min(axis=1)         # [N]
+
     rules = {
         "deterministico": None,
         "score-argmin (regress)": S.argmin(axis=1),
         "R1 piu vicino al deterministico": d1.argmin(axis=1),
         "R2 coerenza cinematica": r2.argmin(axis=1),
         "R3 R1 + R2": (d1 / d1.mean() + r2 / r2.mean()).argmin(axis=1),
+        "R4 consensus retrieval (mediana)": d4.argmin(axis=1),
+        "R5 vicino al vicino recuperato": d5.argmin(axis=1),
+        "R4 scalato + R1": (d4 / d4.mean() + d1 / d1.mean()).argmin(axis=1),
         "orakle": ade_k.argmin(axis=1),
     }
     print(f"\n{'regola':34s} {'MDE [m]':>10s} {'vs det':>9s}")
