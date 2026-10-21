@@ -25,6 +25,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from config_utils import resolve_horizon_steps
+
 
 # ==============================================================================
 # 1. Vectorized Bitwise Gray-Code Codec with Differentiable Soft-XOR STE
@@ -77,12 +79,19 @@ class GrayCodeCodec(nn.Module):
         )
         self.register_buffer("delta_scales", scales)
 
-        # Horizon step intervals in units of 5s steps: dk_h = h_step[h] - h_step[h-1]
-        h_steps = torch.tensor(win_cfg["horizon_steps_5s"], dtype=torch.float32)
+        # Horizon intervals in units of `data.dt_seconds` steps, derived from the
+        # horizon SECONDS so the same code serves a 5 s and a 10 s grid.
+        h_steps = torch.tensor(resolve_horizon_steps(cfg), dtype=torch.float32)
         prev_steps = torch.cat([torch.zeros(1), h_steps[:-1]], dim=0)
         dk_steps = h_steps - prev_steps  # [H]
-        self.register_buffer("h_steps_5s", h_steps)
+        self.register_buffer("h_steps", h_steps)
+        self.register_buffer("h_steps_5s", h_steps)         # legacy alias
         self.register_buffer("dk_steps", dk_steps)
+        # the horizon in SECONDS is what the loss normalisations must use: using
+        # the step index silently assumed a 5 s step and would under-weight every
+        # horizon by 2x on a 10 s grid
+        self.register_buffer(
+            "h_seconds", torch.tensor(win_cfg["horizon_seconds"], dtype=torch.float32))
 
         # Cached constant tables: creating these with torch.arange/torch.tensor on
         # every forward pass costs ~20 extra kernel launches + allocator churn
@@ -1000,8 +1009,11 @@ class HybridPhysicsConstrainedLoss(nn.Module):
 
         # 2. Normalized coordinate error for STE Gray-Code head and Final Fused head
         scales = self.attr_scales.view(1, 1, 6)
-        h_pos_norm = (0.04 + 0.96 * (self.codec.h_steps_5s / 60.0)).view(1, -1, 1)
-        h_gc_norm = (self.codec.h_steps_5s / 12.0).clamp(min=0.5).view(1, -1, 1)
+        # normalise by the horizon in SECONDS (was the step index, which silently
+        # assumed a 5 s step: on a 10 s grid every horizon would be under-weighted
+        # by 2x).  h_gc_norm keeps the original 60 s reference scale.
+        h_pos_norm = (0.04 + 0.96 * (self.codec.h_seconds / 60.0)).view(1, -1, 1)
+        h_gc_norm = (self.codec.h_seconds / 12.0).clamp(min=0.5).view(1, -1, 1)
         err_final_pos = (pred[..., :3] - y_target[..., :3]) / (scales[..., :3] * h_pos_norm)
         err_final_vel = (pred[..., 3:] - y_target[..., 3:]) / scales[..., 3:]
         err_gc = (pred_gc - y_target) / (scales * h_gc_norm)

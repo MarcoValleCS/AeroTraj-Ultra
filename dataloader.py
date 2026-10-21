@@ -16,6 +16,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from config_utils import resolve_horizon_steps
+
 
 class FlightSlidingWindowDataset(Dataset):
     """
@@ -46,11 +48,13 @@ class FlightSlidingWindowDataset(Dataset):
 
         self.inp_seq_len: int = int(win_cfg["inp_seq_len"])
         self.horizon: int = int(win_cfg["horizon"])
-        self.horizon_steps_5s = np.array(win_cfg["horizon_steps_5s"], dtype=np.int64)
+        # steps are derived from horizon_seconds / dt_seconds (config_utils), so
+        # the same code serves a 5 s and a 10 s grid
+        self.horizon_steps = np.array(resolve_horizon_steps(self.cfg), dtype=np.int64)
+        self.horizon_steps_5s = self.horizon_steps          # legacy alias
         self.horizon_seconds = np.array(win_cfg["horizon_seconds"], dtype=np.float32)
-        assert len(self.horizon_steps_5s) == self.horizon >= 10, (
-            "Sliding window must have at least 10 horizon points!"
-        )
+        assert len(self.horizon_steps) == self.horizon >= 1, (
+            "window.horizon must match len(horizon_steps)")
 
         # Load trajectory points and segment boundaries
         points_path = data_dir / f"{split}_points.npy"

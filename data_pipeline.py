@@ -22,6 +22,8 @@ import numpy as np
 import pandas as pd
 import pyarrow.fs as pafs
 import pyarrow.parquet as pq
+
+from config_utils import resolve_horizon_steps
 from pyopensky.rest import REST
 from pyopensky.s3 import S3Client
 from pyopensky.trino import Trino
@@ -198,11 +200,16 @@ class PyOpenSkyTrajectoryPipeline:
 
         for st, cnt in zip(seg_starts, seg_counts):
             seg_pts = points[st : st + cnt]
-            # Verify no unphysical teleportation in lon/lat/alt
+            # Verify no unphysical teleportation in lon/lat/alt.  The thresholds
+            # are PER STEP, so they scale with the step duration: 0.04 deg /
+            # 30 (10 m) per 5 s.  Hardcoding them for 5 s rejects legitimate
+            # motion on a coarser grid.
+            jump = dt_sec / 5.0
             dlon = np.abs(np.diff(seg_pts[:, 0]))
             dlat = np.abs(np.diff(seg_pts[:, 1]))
             dalt = np.abs(np.diff(seg_pts[:, 2]))
-            if np.max(dlon) > 0.04 or np.max(dlat) > 0.04 or np.max(dalt) > 30.0:
+            if np.max(dlon) > 0.04 * jump or np.max(dlat) > 0.04 * jump \
+                    or np.max(dalt) > 30.0 * jump:
                 continue
 
             f_id = int(flight_ids[st])
@@ -442,7 +449,7 @@ class PyOpenSkyTrajectoryPipeline:
 
             # --- Statistics ---------------------------------------------
             inp_len = int(self.win_cfg["inp_seq_len"])
-            max_h_step = max(self.win_cfg["horizon_steps_5s"])
+            max_h_step = max(resolve_horizon_steps(self.cfg))
             min_win_span = inp_len + max_h_step
             segs_view = np.load(segs_path, mmap_mode="r")
             total_possible_windows = int(
