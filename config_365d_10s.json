@@ -53,7 +53,7 @@
     "spdz_size": 12,
     "delta_lon_size": 11,
     "delta_lat_size": 11,
-    "delta_alt_size": 9,
+    "delta_alt_size": 10,
     "delta_spdx_size": 9,
     "delta_spdy_size": 9,
     "delta_spdz_size": 8,

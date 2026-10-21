@@ -391,7 +391,8 @@ class PhysicsKinematicPrior(nn.Module):
         lat0 = p_last[:, 1:2]
         alt0 = p_last[:, 2:3]
 
-        # Robust velocity estimate blending last observation and 3-step (15s) finite difference
+        # Robust velocity estimate blending the last observation with the
+        # 4-step position trend (4 * dt_seconds seconds)
         v_last_x = x_obs[:, -1, 3:4]  # km/h
         v_last_y = x_obs[:, -1, 4:5]  # km/h
         v_last_z = x_obs[:, -1, 5:6]  # m/s
@@ -400,7 +401,7 @@ class PhysicsKinematicPrior(nn.Module):
         m_per_deg_lon = 111320.0 * torch.cos(lat_rad)
         m_per_deg_lat = 111132.0
 
-        # 20s (4 steps) average velocity from positions in m/s
+        # position-trend velocity over the last 4 steps, in m/s
         dt_window = 4.0 * self.dt_sec
         dlon_win = x_obs[:, -1, 0:1] - x_obs[:, -5, 0:1]
         dlat_win = x_obs[:, -1, 1:2] - x_obs[:, -5, 1:2]
@@ -410,15 +411,17 @@ class PhysicsKinematicPrior(nn.Module):
         vy_fd_ms = (dlat_win * m_per_deg_lat) / dt_window
         vz_fd_ms = dalt_win / dt_window
 
-        # Instantaneous 1-step (5s) velocity in m/s
+        # Instantaneous one-step velocity in m/s
         vx_inst_ms = v_last_x / 3.6
         vy_inst_ms = v_last_y / 3.6
         vz_inst_ms = v_last_z
 
         # Horizon-adaptive velocity blend: onboard ADS-B Doppler velocity is primary,
-        # with light 20s position-trend smoothing at longer horizons
+        # with light position-trend smoothing at longer horizons.  The offset is one
+        # step (dt_sec), not a hardcoded 5 s, so the blend starts at the same
+        # relative point on any grid.
         t = self.t_sec.view(1, -1)  # [1, H]
-        w_smooth = 0.12 * (1.0 - torch.exp(-(t - 5.0).clamp(min=0.0) / 45.0))
+        w_smooth = 0.12 * (1.0 - torch.exp(-(t - self.dt_sec).clamp(min=0.0) / 45.0))
         vx0_ms = (1.0 - w_smooth) * vx_inst_ms + w_smooth * vx_fd_ms
         vy0_ms = (1.0 - w_smooth) * vy_inst_ms + w_smooth * vy_fd_ms
         vz0_ms = (1.0 - w_smooth) * vz_inst_ms + w_smooth * vz_fd_ms
@@ -1009,11 +1012,13 @@ class HybridPhysicsConstrainedLoss(nn.Module):
 
         # 2. Normalized coordinate error for STE Gray-Code head and Final Fused head
         scales = self.attr_scales.view(1, 1, 6)
-        # normalise by the horizon in SECONDS (was the step index, which silently
-        # assumed a 5 s step: on a 10 s grid every horizon would be under-weighted
-        # by 2x).  h_gc_norm keeps the original 60 s reference scale.
-        h_pos_norm = (0.04 + 0.96 * (self.codec.h_seconds / 60.0)).view(1, -1, 1)
-        h_gc_norm = (self.codec.h_seconds / 12.0).clamp(min=0.5).view(1, -1, 1)
+        # Normalise by the horizon in SECONDS.  The original code used the STEP
+        # INDEX, which is only dt-independent if the reference scales are carried
+        # along: h_steps/60 == seconds/300 and h_steps/12 == seconds/60 on a 5 s
+        # grid.  Using the raw seconds with 60/12 (as a first attempt did) changes
+        # the weights by 5x and would silently break every existing checkpoint.
+        h_pos_norm = (0.04 + 0.96 * (self.codec.h_seconds / 300.0)).view(1, -1, 1)
+        h_gc_norm = (self.codec.h_seconds / 60.0).clamp(min=0.5).view(1, -1, 1)
         err_final_pos = (pred[..., :3] - y_target[..., :3]) / (scales[..., :3] * h_pos_norm)
         err_final_vel = (pred[..., 3:] - y_target[..., 3:]) / scales[..., 3:]
         err_gc = (pred_gc - y_target) / (scales * h_gc_norm)

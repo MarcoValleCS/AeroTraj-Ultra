@@ -525,7 +525,11 @@ def main() -> None:
 
     # classical baselines (no training)
     cv = ConstantVelocityKalmanBaseline(horizon_seconds).to(DEVICE)
-    cvs = SmoothedConstantVelocityBaseline(horizon_seconds, dt_sec=5.0).to(DEVICE)
+    # the smoothed CV fits a velocity over the input window, so its time axis must
+    # come from the config: hardcoding 5 s made the baseline 2x wrong on a coarser
+    # grid, i.e. artificially weak
+    cvs = SmoothedConstantVelocityBaseline(
+        horizon_seconds, dt_sec=float(cfg["data"]["dt_seconds"])).to(DEVICE)
     for nm, mod in (("cv_doppler", cv), ("cv_lsq", cvs)):
         preds, targs = [], []
         with torch.no_grad():
