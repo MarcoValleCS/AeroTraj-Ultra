@@ -30,7 +30,7 @@ Pang, Alam, Lulli et al., AAMAS 2026).
 4. [Architettura del modello](#4-architettura-del-modello)
 5. [Risultati sperimentali](#5-risultati-sperimentali)
 6. [Benchmark dei modelli della letteratura](#6-benchmark-dei-modelli-della-letteratura-90-giorni-orizzonte-5-s--300-s)
-   - 6.9 **Latenza e throughput di inferenza** (quanto ci mette una previsione)
+   - 6.10 **Latenza e throughput di inferenza** (quanto ci mette una previsione)
 7. [Funzionalità e limiti noti](#7-funzionalità-e-limiti-noti)
 8. [Riferimenti](#8-riferimenti)
 
@@ -230,17 +230,17 @@ Ottimizzazioni applicate nella run GPU:
   4 096 campi richiede solo ~200 ms, quindi batch grandi e `strided window pool` ampio non costano
   quasi nulla).
 
-### 2.6 Prossi passi (prioritizzati sulle evidenze del benchmark)
+### 2.6 Prossimi passi (prioritizzati sulle evidenze del benchmark)
 
 Le priorità sono state riviste dopo il benchmark della §6, che ha **smentito due ipotesi**
 iniziali: (i) la finestra di input non è il collo (l'errore a 5 s è sotto il rumore
 quantizzato dell'ancora), (ii) l'ensembling tra architetture diverse peggiora la previsione.
 
-0. ~~**Testa multi-iperspettrale**~~ — **implementata** (§6.4): 8 mode query mascherate,
+0. ~~**Testa multi-iperspettrale**~~ — **implementata** (§6.5): 8 mode query mascherate,
    loss winner-takes-all + ausiliaria. Il percorso deterministico resta invariato
    (1,9e-6) e l'oracle minADE@8 scende a 627,4 m (−36 % sulla previsione deterministica),
    il migliore tra tutti i modelli benchmarkati. Costo: +3,5 % parametri, +3 % tempo.
-1. ~~**Calibrazione dell'incertezza**~~ — **implementata** (§6.5): la calibrazione conformal
+1. ~~**Calibrazione dell'incertezza**~~ — **implementata** (§6.6): la calibrazione conformal
    Mondrian per fase di volo dà copertura esatta e uniforme sull'orizzonte con un raggio
    **47 % più piccolo** rispetto a gonfiare la previsione deterministica (90 %: 1 413 m vs
    2 675 m). **Resta aperto**: nessuna regola di selezione senza oracolo batte l'output
@@ -807,7 +807,7 @@ ma è la metrica standard dei modelli generativi).
 **Letture principali**
 
 1. **Il modello di progetto vince sulla metrica operativa** (991,6 m): **−18,7 %** vs FlightBERT++ V2,
-   **−34,2 %** vs il CV-Doppler, e −4,6 % vs il Deep LSTM. È l'unico che è 同时 migliore a *ogni*
+   **−34,2 %** vs il CV-Doppler, e −4,6 % vs il Deep LSTM. È l'unico che è migliore a *ogni*
    orizzonte della griglia.2. **CFM batte DDPM head-to-head**, riproducendo il claim di FlowATC sul nostro dataset:
    −60 % sul errore di un singolo campione (1 704 vs 4 301 m) e **−44 % in minADE@10**
    (983,5 vs 1 763,6 m). In FlowATC il gap è 11–26 %; qui è molto più ampio perché la nostra
@@ -857,7 +857,7 @@ il dataset in GPU o aggiungere thread di prefetch **non** avrebbe dato nulla.
 & $PY profile_training.py                                                  # A/B sul singolo step
 ```
 
-### 6.4 Testa multi-iperspettrale (`model.n_modes`)
+### 6.5 Testa multi-iperspettrale (`model.n_modes`)
 
 Implementazione e specifica formale in [`ARCHITECTURE.md`](ARCHITECTURE.md) §9. Configurazione
 `config_90d_300s_hyp.json` (K=8, `hyp_weight` 0,5), stessi dati e stessa ricetta del run
@@ -888,7 +888,7 @@ deterministico.
    quindi ancora sfruttabile operativamente — è il prossimo obiettivo (calibrazione conformal
    stratificata per fase di volo).
 
-### 6.5 Calibrazione dell'incertezza (`calibrate_uncertainty.py`)
+### 6.6 Calibrazione dell'incertezza (`calibrate_uncertainty.py`)
 
 Obiettivo: trasformare il guadagno *orakle* della testa multi-iperspettrale in qualcosa di
 utilizzabile operativamente. Script: `calibrate_uncertainty.py` → `results_hyp/calibration.json`.
@@ -931,7 +931,7 @@ sfruttabile per il conflict detection, dove serve una garanzia formale e non un 
 garanzia è marginale (valida under exchangeability) e nonULA distribuzionalmente spostata; in
 un deployment reale il calibration set deve essere raccolto su un periodo rappresentativo.
 
-### 6.6 Modello condizionato dal retrieval (prior d'intenzione)
+### 6.7 Modello condizionato dal retrieval (prior d'intenzione)
 
 Implementazione: `retrieval.py` (motore) · `AeroTrajUltraRetrieval` in `model.py` · training in
 `run_retrieval.py` · diagnostica in `retrieval_probe.py` e `retrieval_diagnostic.py`.
@@ -982,7 +982,7 @@ una traiettoria plausibile (mode averaging). È il motivo per cui serve un model
 candidati (~150 MB in VRAM) · il mascheramento "same flight" è vettorizzato (un loop Python
 costava 49 s/epoca per le sincronizzazioni GPU).
 
-### 6.7 Lo score head: cosa funziona e cosa no (risultato negativo)
+### 6.8 Lo score head: cosa funziona e cosa no (risultato negativo)
 
 Obiettivo: rendere sfruttabile su **una singola previsione** il guadagno oracele della testa
 multi-iperspettrale (orakle 612,7 m contro 956,9 m del deterministico).
@@ -1019,9 +1019,9 @@ testa è la **banda di incertezza certificata** (conformal: raggio 1 190 m al 90
 2 675 m della previsione singola gonfiata, −56 %).
 
 Nota: la selezione migliora comunque (1 060 → 1 031 m con la regressione invece della CE), quindi
-ilTraining dello score head non è inutile — semplicemente non è sufficiente a colmare il gap.
+il training dello score head non è inutile — semplicemente non è sufficiente a colmare il gap.
 
-### 6.8 Confronto con FlightPREV (il modello precedente del progetto)
+### 6.9 Confronto con FlightPREV (il modello precedente del progetto)
 
 Il modello precedente del progetto, **FlightPREV** (<https://github.com/MarcoValleCS/flight>),
 è stato re-implementato sui dati OpenSky (`legacy_flightprev.py`, `run_legacy.py`) per un
@@ -1074,7 +1074,7 @@ dell'originale sul dataset italiano) per mantenere la metrica coerente col resto
 3. Il confronto va quindi letto come *"architettura + loss + priori su questo dataset"*, non
    come *"codice vecchio contro codice nuovo"*.
 
-### 6.9 Latenza e throughput di inferenza (`bench_latency.py`)
+### 6.10 Latenza e throughput di inferenza (`bench_latency.py`)
 
 Obiettivo: **quanto ci mette una previsione**. Misurato su RTX 4070 con
 `bench_latency.py` (artefatti: `results_bench/latency.json`, `results_bench/LATENCY.md`).

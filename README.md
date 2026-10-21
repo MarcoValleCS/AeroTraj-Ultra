@@ -21,7 +21,7 @@ results. Formal spec: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Lab notebo
 | **Model** | `AeroTrajUltra`, 1 276 839 parameters, ~0.6 GFLOP/step |
 | **Hardware** | 1× RTX 4070 (12 GB) — full 80-epoch run in ~25 min |
 | **Result** | **991.6 m** 3-D ECEF mean distance error (5 s–300 s) — best of 10 compared models |
-| **Speed** | 1 aircraft end-to-end in **19.6 ms** (20.1 ms incl. retrieval prior) · **57,702 aircraft/s** at batch 4096 · only 1.17× the cost of a single horizon |
+| **Speed** | 1 aircraft end-to-end in **19.6 ms** (20.1 ms incl. retrieval prior) · **57 702 aircraft/s** at batch 4096 · only 1.17× the cost of a single horizon |
 | **Code** | `model.py` (architecture) · `run.py` (training) · `bench_models.py` (literature replications) |
 | **Uncertainty** | multi-hypothesis head (K=8) + conformal calibration → certified 90 % band with a 56 % smaller radius |
 
@@ -73,6 +73,11 @@ Three properties distinguish it:
 
 ### 2.1 Overview
 
+![AeroTraj-Ultra architecture: Gray-Code encoder + ACoAtt-V2 attention, non-autoregressive multi-horizon decoder, physics kinematic prior, three heads and the MAF-Net trust-region fusion](docs/figures/architecture_overview.png)
+
+<details>
+<summary>Same diagram as plain text</summary>
+
 ```
   x_obs [B,12,9] ─┬─► Gray-Code encoder ─► ACoAtt-V2 embedding ─► Conv1d stem ─┐
   (lon,lat,alt,     │   (85 bit)            (attribute correlation)   (k=3)    │
@@ -100,6 +105,8 @@ Three properties distinguish it:
                                           pred = pred_cont + α ⊙ tanh((pred_gc − pred_cont)/σ) ⊙ σ
 ```
 
+</details>
+
 ### 2.2 Formal description
 
 The full formal specification — every module, every equation, every hyper-parameter — is in
@@ -119,7 +126,7 @@ step deltas on a 55-bit lattice (10/10/9/9/9/8 bits, resolution 0.0001° ≈ 11.
 Decoding is a *soft-XOR prefix parity* with a straight-through estimator:
 
 $$ b_i=\frac{1-\prod_{j\le i}(1-2g_j)}{2},\qquad
-\hat v=\Big(1-2\,\mathrm{sign}\Big)\sum_i b_i\,2^{n-1-i} $$
+\hat v=\Big(1-2\,\mathrm{sign}\Big)\sum_{i=0}^{n-2} b_i\,2^{\,n-2-i} $$
 
 which is algebraically identical to the sequential recurrence `b_i = b_{i-1} ⊕ g_i` but costs a
 single `cumprod` instead of ~5 kernels per bit.
@@ -142,7 +149,7 @@ style) are appended to the decoder sequence and rendered *invisible* to the hori
 an attention mask, so the deterministic path is unchanged; each mode then acts as a per-mode
 bias on the horizon features, decoded by a shared head into a residual on the physics prior.
 Supervision is winner-takes-all with a ranking term and an auxiliary term on all modes. It
-costs +3,5 % parameters and +3 % training time and yields a 36 % lower *oracle* minADE@8.
+costs +3.5 % parameters and +3 % training time and yields a 36 % lower *oracle* minADE@8.
 
 **Loss.**
 $$ \mathcal L=\underbrace{2.5}_{\text{pos}}\mathcal L_{\text{Smooth-L1}}
@@ -193,7 +200,9 @@ The split is **strictly chronological by day** and no flight appears in two spli
 ### 4.1 Main benchmark — 90 days, horizon 5 s → 300 s
 
 Test set: 9 held-out days (2022-03-23 → 2022-03-31), 60 000 sliding windows.
-MDE = 3-D ECEF mean distance error (metres). `minADE@K` is the *oracle* best-of-K.
+MDE = 3-D ECEF mean distance error (metres). `minADE@K` is the *oracle* best-of-K
+(K = 10 samples for the generative models, K = 8 modes for ASCENT); it requires knowing
+which sample is correct and is therefore **not** an operational metric.
 
 | Model | MDE | ADE 3D | FDE 3D | minADE@K | 5 s | 30 s | 1 min | 3 min | 5 min |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -241,19 +250,19 @@ is far better than its single draw (CFM: 983.5 m vs 1 704.3 m), i.e. the uncerta
 
 | Model | deterministic MDE | oracle minADE@K | score-selected MDE | params | s/epoch |
 |---|---:|---:|---:|---:|---:|
-| AeroTraj-Ultra (deterministic) | 991,6 | — | — | 1 276 839 | 28,3 |
-| **AeroTraj-Ultra + multi-hypothesis (K=8)** | **984,9** | **627,4** | 1 098,7 | 1 321 774 (+3,5 %) | 28,5–31 (+3 %) |
-| AeroTraj-Ultra + MC-dropout (K=10) | 995,6 (mean) | 905,4 | — | — | — |
-| CFM (FlowATC-style), K=10 | 1 704,3 | 983,5 | — | — | — |
-| ASCENT, K=8 | 2 348,9 | 1 088,8 | — | — | — |
-| DDPM / MID, K=10 | 4 300,5 | 1 763,6 | — | — | — |
+| AeroTraj-Ultra (deterministic) | 991.6 | — | — | 1 276 839 | 28.3 |
+| **AeroTraj-Ultra + multi-hypothesis (K=8)** | **984.9** | **627.4** | 1 098.7 | 1 321 774 (+3.5 %) | 28.5–31 (+3 %) |
+| AeroTraj-Ultra + MC-dropout (K=10) | 995.6 (mean) | 905.4 | — | — | — |
+| CFM (FlowATC-style), K=10 | 1 704.3 | 983.5 | — | — | — |
+| ASCENT, K=8 | 2 348.9 | 1 088.8 | — | — | — |
+| DDPM / MID, K=10 | 4 300.5 | 1 763.6 | — | — | — |
 
 **Findings.**
 
-* The multi-hypothesis head reaches **627,4 m of oracle minADE@8 — 36 % below the
+* The multi-hypothesis head reaches **627.4 m of oracle minADE@8 — 36 % below the
   deterministic prediction** and better than *every* generative baseline tested, at **+3 % of
-  training cost** and +3,5 % parameters, with **no change to the deterministic output**.
-* The mode set is genuinely diverse (mean-over-modes 1 507,8 m, no collapse) but the
+  training cost** and +3.5 % parameters, with **no change to the deterministic output**.
+* The mode set is genuinely diverse (mean-over-modes 1 507.8 m, no collapse) but the
   individual hypotheses are weaker than the deterministic head, as expected when only the
   closest one is supervised.
 * **No oracle-free selection rule beats the deterministic head.** Four rules were compared
@@ -262,19 +271,19 @@ is far better than its single draw (CFM: 983.5 m vs 1 704.3 m), i.e. the uncerta
 
   | selection rule | val MDE | test MDE | vs deterministic |
   |---|---:|---:|---:|
-  | **deterministic (chosen on validation)** | **1 008,8** | **982,7** | — |
-  | score-weighted mean | 1 062,6 | 1 030,4 | +4,8 % |
-  | consensus medoid | 1 093,3 | 1 059,3 | +7,8 % |
-  | score-argmax | 1 119,3 | 1 098,7 | +11,8 % |
+  | **deterministic (chosen on validation)** | **1 008.8** | **982.7** | — |
+  | score-weighted mean | 1 062.6 | 1 030.4 | +4.8 % |
+  | consensus medoid | 1 093.3 | 1 059.3 | +7.8 % |
+  | score-argmax | 1 119.3 | 1 098.7 | +11.8 % |
 
   The head therefore does **not** replace the point estimate: it is an *uncertainty-shape*
   provider, and the score head is not usable for selection.
-* **A negative result worth stating explicitly** (details in `docs/EXPERIMENTS.md` §6.7):
+* **A negative result worth stating explicitly** (details in `docs/EXPERIMENTS.md` §6.8):
   retraining the score head to *regress* the error of each hypothesis (instead of the
   cross-entropy on the winner) improves the selection from 1 060 to 1 031 m, but **no
-  selection rule tested beats the deterministic output** - not the learned score, not
-  "closest to the deterministic prediction" (990,6 m), not a kinematic-consistency rule
-  (1 523,9 m). The oracle gap exists because the truth happens to lie near one of the 8
+  selection rule tested beats the deterministic output** — not the learned score, not
+  "closest to the deterministic prediction" (990.6 m), not a kinematic-consistency rule
+  (1 523.9 m). The oracle gap exists because the truth happens to lie near one of the 8
   samples, but *identifying which one* needs information that is not available at inference.
   **The multi-hypothesis head is an uncertainty estimator, not a better point estimator**:
   the deterministic head remains the operational output. This is the same caveat the
@@ -287,19 +296,20 @@ is far better than its single draw (CFM: 983.5 m vs 1 704.3 m), i.e. the uncerta
 
   | nominal | coverage (ensemble) | mean radius (ensemble) | coverage (deterministic) | mean radius (deterministic) |
   |---:|---:|---:|---:|---:|
-  | 80 % | 0,805 | **787 m** | 0,806 | 1 282 m |
-  | 90 % | 0,903 | **1 413 m** | 0,903 | 2 675 m |
-  | 95 % | 0,951 | **2 411 m** | 0,951 | 4 542 m |
+  | 80 % | 0 805 | **787 m** | 0 806 | 1 282 m |
+  | 90 % | 0 903 | **1 413 m** | 0 903 | 2 675 m |
+  | 95 % | 0 951 | **2 411 m** | 0 951 | 4 542 m |
 
-  Per-horizon coverage at the 90 % level is 0,905 at 5 s and 0,901 at 300 s — the guarantee
+  Per-horizon coverage at the 90 % level is 0 905 at 5 s and 0 901 at 300 s — the guarantee
   holds uniformly along the horizon, which is what a conflict-detection use case requires.
 
 ### 4.3 Retrieval-conditioned model (medium-term intent prior)
 
 At 60–300 s the residual error is not sensor noise but **intent**: the aircraft's next manoeuvre
-is not observable from a 60 s window. The literature's largest recent gains come from exactly
-this prior (GooDFlight −48 % ADE with goal conditioning, RADiff retrieval-augmented, ATP local
-history of similar behaviours), so `AeroTrajUltraRetrieval` adds it to this model.
+is not observable from a 60 s window. The literature review behind this project places the
+largest recent gains exactly there — goal/route conditioning, retrieval-augmented prediction and
+local-history behaviour modelling all attack the same missing information — so
+`AeroTrajUltraRetrieval` adds it to this model.
 
 **Mechanism.** Every observation is described by a 6-D key — position, flight level, heading,
 speed — and the `K` most similar past trajectories are retrieved from the training set. Their
@@ -321,20 +331,20 @@ inference, where the pool holds only past data.
 
 | Variant | MDE | minADE@8 | 60 s | 120 s | 300 s | conformal radius @90 % |
 |---|---:|---:|---:|---:|---:|---:|
-| Base (deterministic) | 991,6 | — | 316,1 | 977,4 | 4 357,5 | — |
-| + multi-hypothesis (K=8) | 984,9 | 627,4 | 304,6 | 944,2 | 4 169,1 | 1 413 m |
-| + retrieval | 968,9 | — | 302,8 | 932,5 | 4 138,9 | — |
-| **+ both** | **957,2** | **608,2** | **297,7** | **918,5** | **4 092,5** | **1 190 m** |
+| Base (deterministic) | 991.6 | — | 316.1 | 977.4 | 4 357.5 | — |
+| + multi-hypothesis (K=8) | 984.9 | 627.4 | 304.6 | 944.2 | 4 169.1 | 1 413 m |
+| + retrieval | 968.9 | — | 302.8 | 932.5 | 4 138.9 | — |
+| **+ both** | **957.2** | **608.2** | **297.7** | **918.5** | **4 092.5** | **1 190 m** |
 
 **Findings.**
 
-* The gain is **monotone in the horizon** (−0,3 % at 5 s → −5,0 % at 300 s for the retrieval
+* The gain is **monotone in the horizon** (−0.3 % at 5 s → −5.0 % at 300 s for the retrieval
   alone): the prior is irrelevant where physics dominates and decisive where intent is
   uncertain — exactly the expected signature.
-* The effects of the two heads are **additive** (base → −0,7 % multi-hypothesis → −2,3 %
-  retrieval → −3,5 % combined), and the combined model is the best at every horizon.
-* The retrieval improves the **uncertainty** too: the oracle minADE@8 drops from 627,4 to
-  608,2 m, and the conformal band shrinks by a further 16 % (1 413 → 1 190 m at 90 % coverage).
+* The effects of the two heads are **additive** (base → −0.7 % multi-hypothesis → −2.3 %
+  retrieval → −3.5 % combined), and the combined model is the best at every horizon.
+* The retrieval improves the **uncertainty** too: the oracle minADE@8 drops from 627.4 to
+  608.2 m, and the conformal band shrinks by a further 16 % (1 413 → 1 190 m at 90 % coverage).
 * The retrieval is **not** a free lunch: a first attempt, trained from scratch with an
   unnormalised context, was **24 % worse** than the base model. The context must be scaled and
   the projection warm-started, otherwise the retrieval signal swamps the other conditioning.
@@ -352,29 +362,29 @@ same 90-day dataset, same chronological splits, same horizon grid (extended from
 
 | Model | MDE | 5 s | 30 s | 60 s | 120 s | 300 s | params |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| **AeroTraj-Ultra + retrieval** | **957,2** | **61,1** | **119,6** | **297,6** | **918,6** | **4 092,4** | 1,34 M |
-| AeroTraj-Ultra (base) | 991,6 | 61,2 | 122,3 | 308,0 | 952,2 | 4 243,8 | 1,28 M |
-| FlightBERT++ V2 | 1 219,9 | 68,0 | 179,1 | 420,9 | 1 210,0 | 5 025,6 | — |
-| Deep LSTM | 1 296,4 | 77,7 | 206,6 | 478,4 | 1 296,9 | 5 264,8 | — |
-| **FlightPREV (legacy, re-impl.)** | **1 495,8** | 102,8 | 188,4 | 470,9 | 1 395,2 | 6 466,5 | 3,44 M |
-| CV (Doppler) | 1 507,7 | 64,2 | 171,5 | 450,7 | 1 406,3 | 6 643,0 | — |
-| CFM (FlowATC-style) | 1 704,3 | 87,2 | 208,7 | 552,7 | 1 708,2 | 7 125,8 | — |
-| ASCENT | 2 348,9 | 105,7 | 523,9 | 1 144,9 | 2 646,8 | 8 426,0 | — |
-| Attention-LSTM | 3 170,0 | 100,4 | 508,8 | 1 105,0 | 2 967,1 | 14 694,6 | — |
-| DDPM / MID | 4 300,5 | 146,4 | 631,2 | 1 600,7 | 4 233,4 | 17 871,6 | — |
+| **AeroTraj-Ultra + retrieval** | **957.2** | **61.1** | **119.6** | **297.6** | **918.6** | **4 092.4** | 1.34 M |
+| AeroTraj-Ultra (base) | 991.6 | 61.2 | 122.3 | 308.0 | 952.2 | 4 243.8 | 1.28 M |
+| FlightBERT++ V2 | 1 219.9 | 68.0 | 179.1 | 420.9 | 1 210.0 | 5 025.6 | — |
+| Deep LSTM | 1 296.4 | 77.7 | 206.6 | 478.4 | 1 296.9 | 5 264.8 | — |
+| **FlightPREV (legacy, re-impl.)** | **1 495.8** | 102.8 | 188.4 | 470.9 | 1 395.2 | 6 466.5 | 3.44 M |
+| CV (Doppler) | 1 507.7 | 64.2 | 171.5 | 450.7 | 1 406.3 | 6 643.0 | — |
+| CFM (FlowATC-style) | 1 704.3 | 87.2 | 208.7 | 552.7 | 1 708.2 | 7 125.8 | — |
+| ASCENT | 2 348.9 | 105.7 | 523.9 | 1 144.9 | 2 646.8 | 8 426.0 | — |
+| Attention-LSTM | 3 170.0 | 100.4 | 508.8 | 1 105.0 | 2 967.1 | 14 694.6 | — |
+| DDPM / MID | 4 300.5 | 146.4 | 631.2 | 1 600.7 | 4 233.4 | 17 871.6 | — |
 
 **Findings.**
 
 * The new model is **36 % better than FlightPREV** on the same data, and the gap is
-  **uniform across the horizon** (40,6 % at 5 s, 36,5 % at 30 s, 36,8 % at 300 s) — it is a
+  **uniform across the horizon** (40.6 % at 5 s, 36.5 % at 30 s, 36.8 % at 300 s) — it is a
   genuinely better predictor, not a longer-horizon artefact.
 * FlightPREV, re-implemented on OpenSky, ends up **barely better than the constant-velocity
-  baseline** (1 495,8 m vs 1 507,7 m) despite 3,44 M parameters and 2,7× those of
+  baseline** (1 495.8 m vs 1 507.7 m) despite 3.44 M parameters and 2.7× those of
   AeroTraj-Ultra. Two structural reasons, both measured:
   1. **Its normalisations hide the short horizons.** The residual is expressed in ENU units of
-     10 000 m, so with a Huber loss of δ = 0,1 (i.e. 1 000 m) an error of 100 m at 5 s is
+     10 000 m, so with a Huber loss of δ = 0.1 (i.e. 1 000 m) an error of 100 m at 5 s is
      *inside the linear region* and barely influences the gradient: the 5 s error stays at
-     102,8 m against the 61,1 m of AeroTraj-Ultra, whose loss normalises per horizon.
+     102.8 m against the 61.1 m of AeroTraj-Ultra, whose loss normalises per horizon.
   2. **The categorical priors it relies on do not exist in OpenSky.** The original learned
      embeddings of aircraft type, operator and the departure/arrival airports; the OpenSky
      competition data carries none of them, so they were replaced by two coarser geographic
@@ -387,16 +397,19 @@ same 90-day dataset, same chronological splits, same horizon grid (extended from
 
 | Dataset | Train days | Unique flights | MDE, 5 s → 180 s | MDE, 5 s → 600 s |
 |---|---:|---:|---:|---:|
-| 40 days | 32 | 3 118 | 3 321.3 m¹ | 3 019.5 m |
+| 40 days | 32 | 3 118 | 3 321.3 m³ | 3 019.5 m |
 | 90 days | 72 | 76 939 | 539.3 m¹ | 2 751.0 m |
 | 180 days | 144 | 164 410 | — | 527.6 m² |
 
 ¹ apples-to-apples on the *same* held-out test split (the 90-day model evaluated on the
-180-day test set, and vice-versa); ² different horizon grid, 18 test days.
+180-day test set, and vice-versa); ² different horizon grid, 18 test days; ³ legacy 40-day
+CPU run, different machine — shown for reference only.
 
-Doubling the data from 40 to 90 days reduces the error by **17.2 % at the 600 s horizon but only
-1.8 % at 180 s**: the extra data buys accuracy where the trajectory is uncertain (long horizon,
-route divergence) and nothing where the error is dominated by sensor quantisation.
+Going from 40 to 90 days of training data cuts the error on the **same 5 s → 600 s grid by
+8.9 %** (3 019.5 → 2 751.0 m), while doubling again to 180 days gains only **1.8 %** on the
+5 s → 180 s grid (539.3 → 529.4 m, apples-to-apples on the same test set): the extra data buys
+accuracy where the trajectory is uncertain (long horizon, route divergence) and nothing where
+the error is dominated by sensor quantisation.
 
 ### 4.6 Where the remaining error comes from
 
@@ -433,30 +446,30 @@ after `cuda.synchronize()`, plus a per-call CUDA-event measurement of the GPU-bu
 
 | Model | median [ms] | p95 [ms] | MDE [m] |
 |---|---:|---:|---:|
-| DDPM / MID (50 steps, 1 sample) | 262.31 | 357.12 | 4,300.5 |
-| CFM / FlowATC (20 ODE steps, 1 sample) | 93.26 | 102.17 | 1,704.3 |
+| DDPM / MID (50 steps, 1 sample) | 262.31 | 357.12 | 4 300.5 |
+| CFM / FlowATC (20 ODE steps, 1 sample) | 93.26 | 102.17 | 1 704.3 |
 | **AeroTraj-Ultra + retrieval** | **20.12** | 23.88 | **957.2** |
 | **AeroTraj-Ultra** | **19.59** | 23.39 | 991.6 |
-| ASCENT | 12.05 | 13.85 | 2,348.9 |
-| FlightBERT++ V2 | 9.77 | 11.10 | 1,219.9 |
-| Deep LSTM | 0.62 | 1.25 | 1,296.4 |
-| CV / Doppler | 0.46 | 1.18 | 1,507.7 |
+| ASCENT | 12.05 | 13.85 | 2 348.9 |
+| FlightBERT++ V2 | 9.77 | 11.10 | 1 219.9 |
+| Deep LSTM | 0.62 | 1.25 | 1 296.4 |
+| CV / Doppler | 0.46 | 1.18 | 1 507.7 |
 
 **Findings.**
 
 * One aircraft, **whole 5–300 s horizon vector, in 19.6 ms**; the retrieval intent prior adds
-  only **+0.5 ms**. At 4096 aircraft the model sustains **57,702 aircraft/s** (17.3 µs each).
+  only **+0.5 ms**. At 4096 aircraft the model sustains **57 702 aircraft/s** (17.3 µs each).
 * **The batch-1 case is launch-bound, not compute-bound.** The average cost per aircraft at
-  batch 1 is 19,591 µs but the *marginal* cost of one more aircraft is **12.6 µs**: **99.94 %**
+  batch 1 is 19 591 µs but the *marginal* cost of one more aircraft is **12.6 µs**: **99.94 %**
   of the single-aircraft latency is fixed per-call overhead. Confirmed twice over: batching
-  improves the per-aircraft cost by **1,133×**, and `torch.compile` takes batch 1 from
+  improves the per-aircraft cost by **1 133×**, and `torch.compile` takes batch 1 from
   19.59 ms to **4.47 ms** (4.4×) with no change in the mathematics.
 * **Latency is flat in the horizon.** 13 horizons spanning 5–300 s cost **1.17×** a single
   horizon (`bench_latency_horizon.py`). Autoregressive models pay per step, which is exactly
   why CFM (20 steps) and DDPM (50 steps) are 4.7× and 13× slower here.
 * The two generative models are **dominated**: slower *and* less accurate than
   AeroTraj-Ultra. See the Pareto figure `docs/figures/pareto_accuracy_latency.png`.
-* Measured limitation: the exact retrieval top-k is `O(B × M)` over 342,572 candidates and
+* Measured limitation: the exact retrieval top-k is `O(B × M)` over 342 572 candidates and
   **stops scaling after batch ~512** (at batch 512 it already costs as much as the whole
   forward pass). Fleet-scale inference needs an indexed or approximate search.
 
@@ -475,7 +488,8 @@ after `cuda.synchronize()`, plus a per-call CUDA-event measurement of the GPU-bu
 ├── bench_latency.py         inference latency + throughput benchmark (CUDA events)
 ├── bench_latency_horizon.py latency vs number of horizons (non-autoregressive check)
 ├── plot_pareto.py           accuracy-versus-latency Pareto figure
-├── calibrate_uncertainty.py  conformal calibration of the multi-hypothesis ensemble
+├── plot_architecture.py     architecture overview figure
+├── calibrate_uncertainty.py conformal calibration of the multi-hypothesis ensemble
 ├── retrieval.py             retrieval engine (key, value, GPU top-k, leakage control)
 ├── run_retrieval.py         training of the retrieval-conditioned variant
 ├── retrieval_probe.py       decisive probe: does the retrieval prior carry signal?
@@ -499,8 +513,9 @@ after `cuda.synchronize()`, plus a per-call CUDA-event measurement of the GPU-bu
 ├── docs/
 │   ├── PAPER.md              the technical report (paper-style, all the evidence)
 │   ├── ARCHITECTURE.md       formal specification of the model
-│   └── EXPERIMENTS.md        full experimental log (chronological, every run)
-├── results*/                 metrics, CSVs and figures of every run
+│   ├── EXPERIMENTS.md        full experimental log (chronological, every run)
+│   └── figures/              figures embedded by PAPER.md and README.md (png)
+├── results*/                 reports, metrics and CSVs of every run (text: committed)
 └── checkpoints*/             trained weights
 ```
 

@@ -358,7 +358,7 @@ single deterministic prediction:
 
 The nonconformity score is the 3-D distance of the truth to the *closest* hypothesis,
 quantile-calibrated per stratum (climb / cruise / descent) at level `1−α`. See
-`calibrate_uncertainty.py` and `docs/EXPERIMENTS.md` §6.5.
+`calibrate_uncertainty.py` and `docs/EXPERIMENTS.md` §6.6.
 
 ---
 

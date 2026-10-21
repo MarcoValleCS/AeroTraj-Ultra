@@ -203,7 +203,16 @@ x (B×12×9)
 loss = 2.5·L_pos + 0.6·L_vel + 0.4·L_BCE + 0.25·L_STE + 0.25·L_kin   (+ 0.5·L_hyp)
 ```
 
-Every block is specified formally in [`ARCHITECTURE.md`](ARCHITECTURE.md) §2–§11. The rest
+Every block is specified formally in [`ARCHITECTURE.md`](ARCHITECTURE.md) §2–§11.
+
+![AeroTraj-Ultra architecture overview: Gray-Code encoder and ACoAtt-V2 attention, pre-LN Transformer encoder, non-autoregressive multi-horizon decoder, physics kinematic prior, the three output heads and the MAF-Net trust-region fusion](figures/architecture_overview.png)
+
+**Figure 4.1** — Architecture overview. The encoder spine (Gray-Code → ACoAtt-V2 → conv
+stem → pre-LN Transformer → attention pooling) produces the context `c`; the
+non-autoregressive decoder emits the whole horizon vector `D` in one pass; the physics
+prior `P` anchors both the continuous residual head and every multi-hypothesis mode; the
+MAF-Net gate bounds the influence of the coarser Gray-Code branch. Reproduce with
+`plot_architecture.py`. The rest
 of this section reports the parts that carry the scientific claims.
 
 ### 4.2 Why the model is *not* purely generative
