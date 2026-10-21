@@ -1,12 +1,19 @@
 # coding=utf-8
 """
-Architecture overview figure for AeroTraj-Ultra.
+The model schematic (PAPER section 4.1), drawn in the visual language of the
+published figures of the binary-encoding lineage: pastel boxes per role, dashed
+stage containers, bit-vectors as rows of squares, one legend.
 
-Renders, as a real image, the block diagram that README section 2.1 used to carry
-as ASCII art: the Gray-Code encoder -> ACoAtt-V2 -> conv stem -> Pre-LN
-Transformer encoder -> attention pooling spine, the non-autoregressive
-multi-horizon decoder, the physics kinematic prior, the three output heads and the
-MAF-Net trust-region fusion.
+Data path:
+
+  input window (12 x 5 s of ADS-B state)
+    -> Gray-Code encoding of the absolute state
+    -> ACoAtt-V2 attribute correlation (6 attributes, 3 coupled pairs)
+    -> conv stem + pre-LN Transformer encoder -> attention pooling -> context
+    -> non-autoregressive multi-horizon decoder (prefix + H horizon queries)
+    -> three heads (Gray-Code, continuous residual, MAF trust region)
+    -> fused prediction [B, H, 6]
+  with the closed-form physics prior anchoring both residual heads.
 
 Run:  python plot_architecture.py
 Out:  docs/figures/architecture_overview.png
@@ -19,122 +26,124 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+
+from plot_style import arrow, bitrow, box, group, legend
 
 OUT = Path("docs/figures/architecture_overview.png")
 
-# palette: (face, edge)
-C_INP = "#f6f6f6", "#666666"
-C_ENC = "#e8f0fb", "#3b6ea5"      # encoder path
-C_DEC = "#e9f6ee", "#3f8f5e"      # decoder path
-C_PRI = "#fdf0e3", "#c8823a"      # physics prior
-C_HEAD = "#f3ecfa", "#7a4fa3"     # heads
-C_OUT = "#fdecec", "#b04848"      # output
-
-
-def box(ax, x, y, w, h, title, body="", fc="#ffffff", ec="#444444",
-        fs_title=9.5, fs_body=7.9, lw=1.4):
-    """Rounded box with the title top-aligned and the body below it."""
-    ax.add_patch(FancyBboxPatch(
-        (x, y), w, h, boxstyle="round,pad=0.55,rounding_size=1.6",
-        linewidth=lw, edgecolor=ec, facecolor=fc, zorder=2))
-    if body:
-        ax.text(x + w / 2, y + h - 2.4, title, ha="center", va="top",
-                fontsize=fs_title, fontweight="bold", color="#1b1b1b", zorder=3)
-        ax.text(x + w / 2, y + h - 5.2, body, ha="center", va="top",
-                fontsize=fs_body, color="#3a3a3a", zorder=3, linespacing=1.5)
-    else:
-        ax.text(x + w / 2, y + h / 2, title, ha="center", va="center",
-                fontsize=fs_title, fontweight="bold", color="#1b1b1b", zorder=3,
-                linespacing=1.5)
-
-
-def arrow(ax, p, q, color="#555555", lw=1.5, rad=0.0):
-    ax.add_patch(FancyArrowPatch(
-        p, q, arrowstyle="-|>", mutation_scale=13, linewidth=lw, color=color,
-        zorder=1, shrinkA=1.0, shrinkB=1.0, connectionstyle=f"arc3,rad={rad}"))
-
 
 def main() -> None:
-    fig, ax = plt.subplots(figsize=(13.0, 10.4), dpi=150)
-    ax.set_xlim(0, 132)
-    ax.set_ylim(-70, 133)
+    fig, ax = plt.subplots(figsize=(14.8, 11.6), dpi=150)
+    ax.set_xlim(0, 152)
+    ax.set_ylim(0, 122)
     ax.axis("off")
 
-    ax.text(66, 128.5, "AeroTraj-Ultra  ·  architecture overview",
-            ha="center", va="center", fontsize=13.5, fontweight="bold", color="#111111")
-    ax.text(66, 124.6,
-            "single forward pass for all 13 horizons (5–300 s) · no autoregressive rollout · "
-            "every prediction is a residual on the physics prior",
-            ha="center", va="center", fontsize=8.6, color="#555555")
+    ax.text(76, 119.6, "AeroTraj-Ultra — model schematic",
+            ha="center", va="center", fontsize=15.5, fontweight="bold", color="#111111")
+    ax.text(76, 116.2, "one forward pass emits all 13 horizons (5–300 s); every prediction "
+            "is a residual on a closed-form kinematic propagator",
+            ha="center", va="center", fontsize=8.8, color="#555555")
 
-    # ---------------- encoder spine ---------------- #
-    sx, sw = 26, 62
-    box(ax, sx, 108, sw, 13, "input  x_obs  [B, 12, 9]",
-        "(lon, lat, alt, vx, vy, vz) + (u_wind, v_wind, T)  —  12 steps × 5 s = 60 s of history",
-        fc=C_INP[0], ec=C_INP[1], fs_title=10)
-    arrow(ax, (sx + sw / 2, 108), (sx + sw / 2, 102))
+    # ------------------------------------------------------------------ input --
+    group(ax, 2, 78, 33, 24, "Input")
+    box(ax, 4, 92, 29, 7.0, "x_obs   [B, 12, 9]",
+        "12 steps × 5 s = 60 s", role="yellow", fs=9.0, fs_body=7.4)
+    ax.text(4.6, 90.4, "longitude · latitude · altitude\nvx · vy · vz · wind · temperature",
+            ha="left", va="top", fontsize=6.9, color="#6b6b6b", linespacing=1.35)
+    bitrow(ax, 4.6, 83.4, 24, cell=0.78, gap=0.26)
+    ax.text(4.6, 81.6, "9 channels, 12 steps", ha="left", va="top", fontsize=6.6,
+            color="#8a8a8a", style="italic")
 
-    box(ax, sx, 90, sw, 12, "Gray-Code encoder  (85-bit lattice)",
-        "absolute state → Gray code  ·  19/18/12 bits for lon / lat / alt",
-        fc=C_ENC[0], ec=C_ENC[1])
-    arrow(ax, (sx + sw / 2, 90), (sx + sw / 2, 86))
+    # ------------------------------------------------------- embedding stage --
+    group(ax, 39, 78, 71, 24, "Trajectory embedding  ·  Gray-Code + ACoAtt-V2")
+    box(ax, 41, 92.5, 30, 7.0, "Gray-Code encoder",
+        "absolute state → 85-bit lattice", role="blue", fs=8.6, fs_body=7.2)
+    bitrow(ax, 42.0, 89.2, 20, cell=0.66, gap=0.22)
+    arrow(ax, (71.4, 96.0), (76.6, 96.0))
+    box(ax, 77, 92.5, 31, 7.0, "ACoAtt-V2  attribute correlation",
+        "6 attributes · pairs lon↔vx, lat↔vy, alt↔vz", role="blue", fs=8.6, fs_body=7.2)
+    box(ax, 41, 81.5, 30, 6.4, "Conv1d stem (k=3)",
+        "159 → 144 channels", role="blue", fs=8.6, fs_body=7.2)
+    box(ax, 77, 81.5, 31, 6.4, "pre-LN Transformer encoder",
+        "2 layers · 6 heads · d = 144", role="blue", fs=8.6, fs_body=7.2)
+    arrow(ax, (56, 92.5), (56, 88.2))
+    arrow(ax, (71.4, 84.7), (76.6, 84.7))
+    arrow(ax, (92.5, 92.5), (92.5, 88.2))
 
-    box(ax, sx, 72, sw, 14, "ACoAtt-V2  ·  attribute correlation attention",
-        "6 attribute embeddings, cross-attention on the coupled pairs\n"
-        "lon ↔ vx, lat ↔ vy, alt ↔ vz   (meteo attached to the velocity it perturbs)",
-        fc=C_ENC[0], ec=C_ENC[1])
-    arrow(ax, (sx + sw / 2, 72), (sx + sw / 2, 66))
+    # ----------------------------------------------------------- backbone ----
+    arrow(ax, (56, 81.5), (56, 74.4))
+    group(ax, 39, 55, 71, 17, "Context")
+    box(ax, 41, 64.5, 30, 6.4, "attention pooling",
+        "softmax over the 12 encoder states", role="blue", fs=8.6, fs_body=7.2)
+    box(ax, 77, 64.5, 31, 6.4, "context   c ∈ ℝ^(B×144)",
+        "one vector per window", role="teal", fs=8.6, fs_body=7.2)
+    arrow(ax, (71.4, 67.7), (76.6, 67.7))
+    # x_obs also feeds the prior: routed along the outside of the stage
+    arrow(ax, (35.4, 95.5), (114.0, 57.0), color="#d79b00", ls="dashed", rad=-0.22)
 
-    box(ax, sx, 54, sw, 12, "Conv1d stem (k=3)  +  sinusoidal PE",
-        "159 → 144 channels  ·  pre-LN Transformer encoder, 2 layers, 6 heads, d = 144",
-        fc=C_ENC[0], ec=C_ENC[1])
-    arrow(ax, (sx + sw / 2, 54), (sx + sw / 2, 48))
+    # --------------------------------------------- decoder + prior + heads ----
+    group(ax, 2, 4, 76, 47, "Non-autoregressive multi-horizon decoder")
+    box(ax, 4, 39.5, 72, 9.4, "decoder input sequence",
+        "prefix: 55-bit Gray-Code step deltas → Conv1d   (11 tokens)\n"
+        "queries: horizon embedding ⊕ Fourier time features ⊕ context   (H = 13)",
+        role="green", fs=9.0, fs_body=7.3)
+    arrow(ax, (56, 64.5), (56, 49.4))
+    box(ax, 4, 28.5, 72, 7.4, "pre-LN Transformer decoder",
+        "2 layers · 6 heads · self-attention over prefix + queries · "
+        "cross-attention to the encoder memory",
+        role="green", fs=9.0, fs_body=7.3)
+    arrow(ax, (40, 39.5), (40, 36.4))
+    box(ax, 4, 19.5, 72, 6.4, "decoder features   D ∈ ℝ^(B×H×144)",
+        "the same representation feeds all three heads", role="teal",
+        fs=9.0, fs_body=7.3)
+    arrow(ax, (40, 28.5), (40, 26.4))
+    box(ax, 4, 7.5, 34, 8.6, "Head A — Gray-Code MBC",
+        "55 logits → straight-through\ndecode →  ŷ_gc",
+        role="purple", fs=8.4, fs_body=7.2)
+    box(ax, 42, 7.5, 34, 8.6, "Head B — continuous residual",
+        "zero-initialised output layer\ntrainable δ → ŷ_cont = P + δ",
+        role="purple", fs=8.4, fs_body=7.2)
+    arrow(ax, (24, 19.5), (21, 16.6), rad=-0.1)
+    arrow(ax, (56, 19.5), (59, 16.6), rad=0.1)
 
-    box(ax, sx, 36, sw, 12, "Attention feature aggregation",
-        "softmax pooling of the 12 encoder states  →  context  c ∈ ℝ^(B×144)",
-        fc=C_ENC[0], ec=C_ENC[1])
-    arrow(ax, (sx + sw / 2, 36), (sx + sw / 2, 32))
+    group(ax, 82, 28, 68, 30, "Physics kinematic prior")
+    box(ax, 84, 44.0, 64, 11.0, "closed-form damped propagator",
+        "damped coordinated turn + damped vertical rate, WGS-84 metres-per-degree\n"
+        "only three learned scalars:  τ_turn, τ_vz, τ_acc — everything else is analytic",
+        role="orange", fs=9.0, fs_body=7.3)
+    arrow(ax, (116, 44.0), (116, 40.4))
+    box(ax, 84, 32.0, 64, 8.0, "P ∈ ℝ^(B×H×6)",
+        "parameter-free anchor: the network starts exactly here (zero-init residual)",
+        role="orange", fs=9.0, fs_body=7.3)
+    arrow(ax, (116, 32.0), (116, 27.4), ls="dashed", color="#d79b00")
+    arrow(ax, (116, 27.4), (80.0, 11.8), ls="dashed", color="#d79b00", rad=0.10)
 
-    # ---------------- decoder and physics prior ---------------- #
-    box(ax, sx, 16, sw, 16, "Non-autoregressive multi-horizon decoder",
-        "prefix: 55-bit Gray-Code step deltas → Conv1d\n"
-        "queries: horizon embedding + Fourier time features + context\n"
-        "pre-LN Transformer decoder (2 layers)  →  D ∈ ℝ^(B×13×144)",
-        fc=C_DEC[0], ec=C_DEC[1])
-    box(ax, 96, 15, 34, 17, "Physics kinematic prior",
-        "closed-form damped coordinated turn +\n"
-        "damped vertical rate on WGS-84\n"
-        "3 learned time constants: τ_turn, τ_vz, τ_acc\n"
-        "→  P ∈ ℝ^(B×13×6)",
-        fc=C_PRI[0], ec=C_PRI[1], fs_title=9.0, fs_body=7.6)
-    ax.text(113, 32.6, "input: x_obs", ha="center", va="bottom", fontsize=7.4,
-            color=C_PRI[1], style="italic", zorder=3)
-
-    # ---------------- heads ---------------- #
-    box(ax, 2, -14, 44, 14, "Head A  ·  Gray-Code MBC (55 logits)",
-        "sigmoid → straight-through Gray-Code decode\n→  pred_gc",
-        fc=C_HEAD[0], ec=C_HEAD[1])
-    box(ax, 86, -14, 44, 14, "Head B  ·  continuous residual",
-        "zero-initialised output layer\ntrainable δ  →  pred_cont = P + δ",
-        fc=C_HEAD[0], ec=C_HEAD[1])
-
-    arrow(ax, (sx + 14, 16), (24, 0), rad=-0.12)
-    arrow(ax, (96 + 10, 13), (108, 0), rad=0.12)
-
-    box(ax, 22, -40, 66, 15, "Head C  ·  MAF-Net trust region",
+    box(ax, 82, 15.5, 68, 9.6, "Head C — MAF-Net trust region",
         "α = σ( MLP([D ‖ kinematic displacement]) )\n"
-        "pred = pred_cont + α ⊙ tanh( (pred_gc − pred_cont) / σ_h ) ⊙ σ_h",
-        fc=C_HEAD[0], ec=C_HEAD[1], fs_title=9.5)
-    arrow(ax, (24, -14), (62, -25), rad=-0.10)
-    arrow(ax, (108, -14), (72, -25), rad=0.10)
+        "ŷ = ŷ_cont + α ⊙ tanh( (ŷ_gc − ŷ_cont) / σ_h ) ⊙ σ_h",
+        role="purple", fs=8.4, fs_body=7.2)
+    arrow(ax, (38, 7.5), (88, 15.2), rad=-0.10, color="#9673a6")
+    arrow(ax, (76, 7.5), (98, 15.2), rad=0.10, color="#9673a6")
 
-    box(ax, 40, -60, 30, 12, "prediction\n[B, 13, 6]",
-        fc=C_OUT[0], ec=C_OUT[1], fs_title=9.5)
-    arrow(ax, (55, -40), (55, -48))
+    box(ax, 100, 4.0, 50, 8.4, "prediction   ŷ ∈ ℝ^(B×H×6)",
+        "compared with the truth in earth-centred coordinates → 3-D ECEF MDE",
+        role="red", fs=9.0, fs_body=7.2)
+    arrow(ax, (116, 15.5), (125, 12.6))
+
+    # ---------------------------------------------------------------- legend --
+    legend(ax, 114, 114.0, [
+        ("input / raw state", "yellow"),
+        ("Gray-Code + encoder (learned)", "blue"),
+        ("decoder (learned)", "green"),
+        ("physics prior (analytic anchor)", "orange"),
+        ("output heads and fusion", "purple"),
+    ], fs=7.7, title="colour = role")
+    ax.text(114, 95.0, "■ 1     □ 0", fontsize=8.2, color="#333333", va="top",
+            fontweight="bold")
+    ax.text(114, 92.6, "bit-vector convention", fontsize=7.0, color="#6b6b6b", va="top")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout(pad=0.5)
+    fig.tight_layout(pad=0.4)
     fig.savefig(OUT)
     print(f"saved {OUT}")
 

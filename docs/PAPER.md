@@ -173,6 +173,75 @@ and the Euclidean distance is averaged over the horizon grid and the test window
 conversion is applied identically to every model, so the numbers are directly comparable
 across architectures and coordinate parameterisations.
 
+### 3.1 Why a 120-second observation window (the coarse-grid experiment)
+
+The model described in this report reads **60 s** of history (12 points at 5 s). A second
+configuration, `config_365d_10s.json`, reads **120 s** (12 points at 10 s) and predicts
+**{10, 30, 60, 90, 180, 300} s** instead of 13 horizons. The two are trained on the same 365
+days with the same recipe, and every horizon of the coarse grid also exists in the fine grid,
+so the comparison is per horizon on identical test days.
+
+**The argument for the longer window.** The error profile measured in §6.6 and the composition
+of the gains in §6.4 and §6.3 agree on one thing: above ~30 s the residual error is **not**
+sensor noise, it is *how much of the intent is legible in the input*. Three independent
+measurements carry the same signature, all monotone in the horizon:
+
+| lever that adds information about intent | gain at 5 s | gain at 300 s |
+|---|---:|---:|
+| retrieval prior over past trajectories (external) | −0.3 % | −5.0 % |
+| 4.5× more training data (implicit) | −4.9 % | −15.3 % |
+| **more history in the window (this experiment)** | *to be measured* | *to be measured* |
+
+If the long-horizon error is governed by how much of the manoeuvre is visible, then a window
+covering **twice as much of the trajectory** attacks it directly. Concretely, what becomes
+legible at 120 s that is not at 60 s:
+
+* **A whole manoeuvre rather than a fragment.** A turn that began 40 s ago appears in a 60 s
+  window as an almost straight track with slight curvature; over 120 s the entry heading, the
+  turn and the exit heading are all inside the window, which is precisely the information a
+  damped coordinated turn needs (§4.7).
+* **A stationary turn-rate estimate.** The prior's `ω0` comes from a 3-step heading difference
+  — 15 s at 5 s spacing, 30 s at 10 s. A longer baseline makes that estimate less sensitive to
+  single-sample track noise, which matters because the propagator assumes a *constant* turn
+  rate over the horizon.
+* **Flight phase and vertical trend.** A climb that started 90 s ago is invisible in a 60 s
+  window; in a 120 s one the altitude change is twice as large relative to the same
+  quantisation, so cruise / climb / descent are far better separated.
+* **Leg context.** The heading trend over 120 s distinguishes "established on a leg" from
+  "turning onto one", which is exactly the disambiguation the retrieval module tries to make
+  from other flights' history (§4.10) — here it is made from the aircraft's own.
+
+**What it costs, stated plainly.** The sampling is coarser by construction: with the same 12
+points, a step-to-step displacement doubles, so (i) short-term *accelerations* are less
+visible to the encoder, (ii) the Gray-Code delta lattices had to be widened (§3.2), and
+(iii) the 5 s output horizon no longer exists, so the 5–30 s band — the band we know is
+saturated by CPR quantisation anyway — can only be judged at 10 s. The experiment therefore
+tests a *joint* change (longer history **and** coarser sampling), and the verdict will be read
+per horizon: if the extra history is what helps, the gain must **grow with the horizon**, the
+opposite of a sampling artefact.
+
+**Disentangling the two effects** would need a 24-point window at 5 s (same resolution, double
+history); that is the natural follow-up if this experiment is positive.
+
+### 3.2 Grid bookkeeping: how the time step becomes a parameter
+
+The horizon grid is declared in **seconds** and converted to sequence indices using
+`data.dt_seconds`. That conversion now lives in one place
+(`config_utils.resolve_horizon_steps`), which also *verifies* the declared index arrays against
+`horizon_seconds / dt`. Before this, consumers read an array named `horizon_steps_5s`, and two
+normalisations in the loss divided those indices by 60 and 12 — which is only dt-independent if
+the reference scales are carried along (they equal `seconds/300` and `seconds/60`). Moving to a
+10 s grid without noticing that would have silently halved the weight of every horizon. With
+the derivation centralised, all existing configurations resolve to exactly their declared
+arrays, so the change is a strict generalisation.
+
+Widening the delta lattices is the other consequence: a coarser step doubles every per-step
+displacement, so `delta_lon_size` and `delta_lat_size` go 10 → 11 bits and `delta_alt_size`
+9 → 10. The widths were chosen by **measuring** the requirement rather than by reasoning
+(`test_codec_10s.py`): longitude needs 800 of 1023 (1.28× margin, the requirement being the
+pipeline's own 0.04° per 5 s rejection tolerance scaled to the step), and altitude needs 250 of
+255 at 9 bits — no margin at all for a 25 m/s climb — hence 10 bits (2.04×).
+
 ---
 
 ## 4. Method

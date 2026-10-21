@@ -32,3 +32,9 @@ stamina==26.0.0
 # `triton` wheel is Linux-only).  Without it the training silently falls back
 # to eager mode and is ~1.5x slower.
 triton-windows==3.2.0.post21; sys_platform == "win32"
+
+# Figures: the schematics are matplotlib (offline, reproducible), the 3-D
+# trajectory panels are Plotly + Kaleido (which renders through the system
+# Chrome/Chromium).  Kaleido >= 1.0 requires plotly >= 6.1.
+plotly>=6.1
+kaleido>=1.0
