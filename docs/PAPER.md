@@ -511,6 +511,15 @@ position increment matches the trapezoidal integral of the predicted velocities:
 and analogously for `y` and `z` (vertical denominator `15 + 0.5 Δt_h`). This is the term
 that ties the three output heads to a single physically realisable curve.
 
+![The hybrid training objective: five weighted terms, with the model outputs on the left and the target on the right feeding a summation node](figures/hybrid_loss.png)
+
+**Figure 4.2** — The hybrid objective. `L_BCE` and `L_STE` (yellow) are the two terms
+inherited from the binary-encoding lineage: one supervises the *encoding* (the bit
+logits) and one supervises the *task* (the decoded trajectory), which is only possible
+because the decoder is differentiable. `L_pos`, `L_vel` and `L_kin` (orange) are what
+this project adds, and `L_kin` is what makes the three heads describe a single
+kinematically realisable curve. Reproduce with `plot_loss.py`.
+
 ---
 
 ## 5. Experimental protocol
