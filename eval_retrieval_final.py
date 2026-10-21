@@ -18,11 +18,22 @@ from model import AeroTrajUltraRetrieval
 from retrieval import build_pool, window_descriptor
 from run import compute_trajectory_metrics
 
-CONFIG = "config_90d_300s_hyp.json"
-CKPT = "checkpoints_hyp/retrieval/aerotraj_ultra_retrieval_best.pt"
-K = 8
-POS_WEIGHT = 10.0
-POOL_STRIDE = 16
+import argparse
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--config", default="config_90d_300s_hyp.json")
+ap.add_argument("--checkpoint", default="checkpoints_hyp/retrieval/aerotraj_ultra_retrieval_best.pt")
+ap.add_argument("--out", default="results_hyp/retrieval/final_eval.json")
+ap.add_argument("--k", type=int, default=8)
+ap.add_argument("--pos-weight", type=float, default=10.0)
+ap.add_argument("--pool-stride", type=int, default=16)
+_args = ap.parse_args()
+
+CONFIG = _args.config
+CKPT = _args.checkpoint
+K = _args.k
+POS_WEIGHT = _args.pos_weight
+POOL_STRIDE = _args.pool_stride
 
 
 def main() -> None:
@@ -70,13 +81,15 @@ def main() -> None:
         dist = np.sqrt((d[..., 0] * mlon) ** 2 + (d[..., 1] * 111132.0) ** 2 + (d[..., 2] * 10.0) ** 2)
         ade_k = dist.mean(axis=2)
         fde_k = dist[:, :, -1]
-        sel = score.argmax(axis=1)
+        _mode = getattr(model, "hyp_score_mode", "ce")
+        sel = score.argmax(axis=1) if _mode == "ce" else score.argmin(axis=1)
         idx = np.arange(len(targ))
         return {
             "mde_deterministic_m": m["overall_mde_3d_m"],
             "minade_k_m": float(ade_k.min(axis=1).mean()),
             "minfde_k_m": float(fde_k.min(axis=1).mean()),
             "mde_score_selected_m": float(ade_k[idx, sel].mean()),
+            "score_mode": _mode,
             "mde_mean_over_modes_m": float(ade_k.mean()),
             "per_horizon_mde": {f"{int(h)}s": m["per_horizon"][f"{int(h)}s"]["mde_3d_m"] for h in hs},
         }
@@ -107,11 +120,11 @@ def main() -> None:
         print(f"  alpha={alpha:<5} copertura={cov:.3f} (target {1-alpha:.2f})  raggio medio={q.mean():,.0f} m")
     res["conformal"] = cal
 
-    json.dump(res, open("results_hyp/retrieval/final_eval.json", "w"), indent=2)
+    json.dump(res, open(_args.out, "w"), indent=2)
     print(f"\n[eval] MDE deterministico = {res['test']['mde_deterministic_m']:.1f} m")
     print(f"[eval] minADE@{K} (orakle)  = {res['test']['minade_k_m']:.1f} m")
     print(f"[eval] selezione(score)    = {res['test']['mde_score_selected_m']:.1f} m")
-    print("[eval] salvato in results_hyp/retrieval/final_eval.json")
+    print(f"[eval] salvato in {_args.out}")
 
 
 if __name__ == "__main__":

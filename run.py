@@ -193,7 +193,9 @@ def evaluate_aerotraj_ultra(
         m_full["minfde_k_m"] = float(dist[:, :, -1].min(axis=1).mean())
         m_full["n_modes"] = int(H.shape[1])
         m_full["mde_mean_over_modes_m"] = float(per_mode_ade.mean())
-        sel = S.argmax(axis=1)                                 # operational selection
+        # operational selection: argmax for a "ce" score, argmin for a
+        # "regress" score (the score then predicts the error directly)
+        sel = S.argmax(axis=1) if getattr(model, "hyp_score_mode", "ce") == "ce" else S.argmin(axis=1)
         idx = np.arange(len(targ_np))
         m_full["mde_score_selected_m"] = float(per_mode_ade[idx, sel].mean())
     return loss_mean, m_full, m_cont, m_kin

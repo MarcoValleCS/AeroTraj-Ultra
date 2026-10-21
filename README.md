@@ -263,6 +263,17 @@ is far better than its single draw (CFM: 983.5 m vs 1 704.3 m), i.e. the uncerta
 
   The head therefore does **not** replace the point estimate: it is an *uncertainty-shape*
   provider, and the score head is not usable for selection.
+* **A negative result worth stating explicitly** (details in `docs/EXPERIMENTS.md` §6.7):
+  retraining the score head to *regress* the error of each hypothesis (instead of the
+  cross-entropy on the winner) improves the selection from 1 060 to 1 031 m, but **no
+  selection rule tested beats the deterministic output** - not the learned score, not
+  "closest to the deterministic prediction" (990,6 m), not a kinematic-consistency rule
+  (1 523,9 m). The oracle gap exists because the truth happens to lie near one of the 8
+  samples, but *identifying which one* needs information that is not available at inference.
+  **The multi-hypothesis head is an uncertainty estimator, not a better point estimator**:
+  the deterministic head remains the operational output. This is the same caveat the
+  literature reports for generative predictors (a single draw is worse than a deterministic
+  regressor), here reproduced inside a single architecture.
 * **Where the head does pay off: certified uncertainty.** Treating the 8 hypotheses as an
   ensemble and inflating it with a **Mondrian (phase-stratified) conformal radius** calibrated
   on the validation split gives an *exact* and *horizon-uniform* coverage, with a radius

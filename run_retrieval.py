@@ -160,6 +160,7 @@ def main() -> None:
     min_delta = float(es.get("min_delta", 0.5))
     min_epochs = int(es.get("min_epochs", 12))
 
+    n_skipped = 0
     for ep in range(1, args.epochs + 1):
         model.train()
         t0 = time.time()
@@ -168,11 +169,17 @@ def main() -> None:
             ctx = make_ctx(x_b, anchors, exclude_same_flight=True)
             opt.zero_grad(set_to_none=True)
             loss, _ = crit(model(x_b, retr_ctx=ctx), x_b, y_b)
+            if not torch.isfinite(loss):
+                n_skipped += 1
+                opt.zero_grad(set_to_none=True)
+                continue
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.5)
             opt.step()
             sched.step()
             losses.append(loss.detach())
+        if n_skipped:
+            print(f"  [warn] {n_skipped} batch non finiti saltati")
         vm = evaluate(model, val_loader, make_ctx, hs, dev, exclude_same_flight=False)["overall_mde_3d_m"]
         hist.append({"epoch": ep, "train_loss": float(torch.stack(losses).mean().item()),
                      "val_mde_m": vm, "time_s": round(time.time() - t0, 1)})

@@ -574,6 +574,9 @@ class AeroTrajUltra(nn.Module):
             self.horizon_proj = nn.Linear(self.n_embd * 3, self.n_embd)
 
         self.n_modes = int(m_cfg.get("n_modes", 0))
+        # how the score head is trained: "ce" -> higher score = better (argmax),
+        # "regress" -> the score predicts the log-error (argmin)
+        self.hyp_score_mode = str(cfg.get("training", {}).get("hyp_score_mode", "ce"))
         if self.n_modes > 0:
             self.mode_queries = nn.Parameter(
                 torch.randn(self.n_modes, self.n_embd) * 0.02
@@ -863,12 +866,17 @@ def multi_hypothesis_wta_loss(
     attr_scales: torch.Tensor,
     aux_weight: float = 0.1,
     score_weight: float = 0.1,
+    score_mode: str = "ce",
+    score_scale: float = 100.0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Winner-takes-all multi-hypothesis loss (ASCENT / DETR style).
 
     * only the hypothesis closest to the ground truth drives the regression;
-    * a cross-entropy term ranks that hypothesis first;
+    * the SCORE term, in "ce" mode, is a cross-entropy that ranks that
+      hypothesis first; in "regress" mode the score head instead REGRESSES the
+      (log) error of every hypothesis, which is the objective the selection
+      rule actually uses (argmin of the predicted error);
     * an auxiliary (down-weighted) regression on EVERY hypothesis prevents the
       non-winning ones from degenerating.
 
@@ -902,8 +910,24 @@ def multi_hypothesis_wta_loss(
     reg_best = F.smooth_l1_loss(err_b[..., :3], torch.zeros_like(err_b[..., :3]), beta=0.25) \
         + F.smooth_l1_loss(err_b[..., 3:], torch.zeros_like(err_b[..., 3:]), beta=0.5)
     aux = per_mode.mean()
-    ce = F.cross_entropy(hyp_score, best)
-    return reg_best + aux_weight * aux + score_weight * ce, best
+    if score_mode == "regress":
+        # the score head predicts the log-error of its own hypothesis, so the
+        # selection rule (argmin) is exactly the minimiser of that prediction
+        lat_r = torch.deg2rad(target[:, :, 1]).unsqueeze(1)          # [B,1,H]
+        mlon = 111320.0 * torch.cos(lat_r)
+        dd = hyp_pred - target.unsqueeze(1)
+        err_m = torch.sqrt(
+            (dd[..., 0] * mlon) ** 2 + (dd[..., 1] * 111132.0) ** 2 + (dd[..., 2] * 10.0) ** 2
+        ).mean(dim=2)                                                # [B,K] metres
+        # the target MUST be detached: otherwise the gradient flows into the
+        # trajectory branch and the model can lower the loss by INFLATING the
+        # error of its own hypotheses (a degenerate incentive that diverged to
+        # NaN in the first attempt).
+        score_target = torch.log1p(err_m.detach() / score_scale)
+        score_term = F.smooth_l1_loss(hyp_score, score_target, beta=1.0)
+    else:
+        score_term = F.cross_entropy(hyp_score, best)
+    return reg_best + aux_weight * aux + score_weight * score_term, best
 
 
 class HybridPhysicsConstrainedLoss(nn.Module):
@@ -923,6 +947,8 @@ class HybridPhysicsConstrainedLoss(nn.Module):
         self.hyp_weight = float(tr_cfg.get("hyp_weight", 0.5))
         self.hyp_aux_weight = float(tr_cfg.get("hyp_aux_weight", 0.1))
         self.hyp_score_weight = float(tr_cfg.get("hyp_score_weight", 0.1))
+        self.hyp_score_mode = str(tr_cfg.get("hyp_score_mode", "ce"))
+        self.hyp_score_scale = float(tr_cfg.get("hyp_score_scale", 100.0))
         self.bce_weight = float(tr_cfg["bce_weight"])
         self.gc_ste_weight = float(tr_cfg["gc_ste_weight"])
         self.cont_weight = float(tr_cfg["cont_weight"])
@@ -1012,6 +1038,8 @@ class HybridPhysicsConstrainedLoss(nn.Module):
                 self.attr_scales,
                 aux_weight=self.hyp_aux_weight,
                 score_weight=self.hyp_score_weight,
+                score_mode=self.hyp_score_mode,
+                score_scale=self.hyp_score_scale,
             )
             total_loss = total_loss + self.hyp_weight * loss_hyp
 

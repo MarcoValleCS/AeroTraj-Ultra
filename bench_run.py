@@ -294,7 +294,10 @@ def evaluate_model(adapter: Adapter, loader, horizon_seconds: List[int],
         # mean over the modes for reference.
         S = np.concatenate(scores_all, axis=0)                 # [N,K]
         d3s = np.stack([horizontal_and_3d_errors(P[:, k], T)[0] for k in range(P.shape[1])], axis=1)
-        sel = S.argmax(axis=1)                                 # [N]
+        # operational selection: argmax for a "ce" score, argmin for a
+        # "regress" score (the score then predicts the error directly)
+        _mode = getattr(ad.module, "hyp_score_mode", "ce")
+        sel = S.argmax(axis=1) if _mode == "ce" else S.argmin(axis=1)
         idx = np.arange(len(T))
         d3_sel = d3s[idx, sel]                                  # [N,H]
         d3_mean = d3s.mean(axis=1)

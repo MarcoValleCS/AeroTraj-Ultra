@@ -977,6 +977,45 @@ una traiettoria plausibile (mode averaging). È il motivo per cui serve un model
 candidati (~150 MB in VRAM) · il mascheramento "same flight" è vettorizzato (un loop Python
 costava 49 s/epoca per le sincronizzazioni GPU).
 
+### 6.7 Lo score head: cosa funziona e cosa no (risultato negativo)
+
+Obiettivo: rendere sfruttabile su **una singola previsione** il guadagno oracele della testa
+multi-iperspettrale (orakle 612,7 m contro 956,9 m del deterministico).
+
+**Passo 1 — cambiare l'obiettivo dello score head.** La CE sul winner insegna al punteggio solo
+a *ordinare* le ipotesi, mentre la regola di selezione ha bisogno di *stimare* quale sia buona.
+La loss è stata quindi cambiata in una **regressione** del punteggio sull'errore di ogni ipotesi
+(`smooth_l1` tra il punteggio e `log1p(errore/100)`), con la selezione che diventa `argmin`.
+
+*Bug incontrato e corretto*: il target **deve** essere staccato (`err_m.detach()`). Senza, il
+gradiente fluisce anche nel ramo traiettoria e il modello abbassa la loss *gonfiando* l'errore
+delle proprie ipotesi: la run è **divergita a NaN** all'epoca 9. Con il detach la run è stabile
+(20 epoche) ed è stata aggiunta anche una guardia che salta i batch non finiti.
+
+**Passo 2 — confrontare le regole di selezione** (`selection_rules.py`, tutte *senza training*):
+
+| Regola | MDE [m] | vs deterministico (956,9 m) |
+|---|---:|---:|
+| score-argmin (regressione) | 1 031,0 | +7,7 % |
+| **R1: ipotesi più vicina all'output deterministico** | **990,6** | +3,5 % |
+| R2: coerenza cinematica (rateo di virata / velocità implicati vs osservati) | 1 523,9 | +59,4 % |
+| R3: R1 + R2 | 1 007,2 | +5,3 % |
+| *orakle (best-of-8)* | *612,7* | *−36,0 %* |
+
+**Conclusione**: **nessuna regola di selezione batte l'output deterministico**. Il motivo è
+strutturale, non un difetto di implementazione: le 8 ipotesi provengono da una testa *più debole*
+del ramo deterministico (che ha a disposizione encoder completo, prior fisico e branch Gray-Code),
+e l'oracele esiste solo perché la verità *casualmente* cade vicino a uno dei 8 campioni — ma
+*sapere quale* richiede informazione non disponibile in inferenza.
+
+Conseguenza progettuale: **la testa multi-iperspettrale è un estimatore di incertezza, non un
+miglior estimatore di punto**. L'output operativo resta la testa deterministica; il valore della
+testa è la **banda di incertezza certificata** (conformal: raggio 1 190 m al 90 % contro i
+2 675 m della previsione singola gonfiata, −56 %).
+
+Nota: la selezione migliora comunque (1 060 → 1 031 m con la regressione invece della CE), quindi
+ilTraining dello score head non è inutile — semplicemente non è sufficiente a colmare il gap.
+
 ---
 
 ## 7. Funzionalità e limiti noti
