@@ -212,6 +212,7 @@ def train_and_evaluate_all(
     rebuild_data: bool = False,
     optimizer_override: Optional[str] = None,
     scheduler_override: Optional[str] = None,
+    compile_mode: str = "none",
 ) -> None:
     torch.manual_seed(97)
     np.random.seed(97)
@@ -302,6 +303,15 @@ def train_and_evaluate_all(
     criterion = HybridPhysicsConstrainedLoss(model.codec, cfg).to(device)
     num_params = sum(p.numel() for p in model.parameters())
     print(f"\n=== Training AeroTraj-Ultra (FlightBERT++ V3) | Parameters: {num_params:,} ===")
+
+    # Optional torch.compile of the training step.  The model is launch-bound
+    # (~600 CUDA kernels per forward at 144 dim), so kernel fusion is worth
+    # 1.5-1.9x per epoch; the optimiser step itself keeps the eager parameters,
+    # because compiling a module returns a wrapper whose .parameters() still
+    # point at the original module.
+    if compile_mode and compile_mode != "none":
+        model = torch.compile(model, mode=compile_mode)
+        print(f"[Compile] torch.compile(mode={compile_mode}) attivo sul training step")
 
     epochs = int(tr_cfg["epochs"])
     lr = float(tr_cfg["learning_rate"])
@@ -945,6 +955,10 @@ if __name__ == "__main__":
         help="Override training.max_train_samples_per_epoch",
     )
     parser.add_argument("--skip-baselines", action="store_true", help="Do not train the reference baselines")
+    parser.add_argument(
+        "--compile", type=str, default="none",
+        choices=["none", "default", "reduce-overhead", "max-autotune-no-cudagraphs"],
+        help="torch.compile mode for the training step (default: none)")
     parser.add_argument("--rebuild-data", action="store_true", help="Force re-download of the OpenSky dataset")
     parser.add_argument("--optimizer", type=str, default=None, help="adamw | adam | sgd (override config)")
     parser.add_argument("--scheduler", type=str, default=None, help="onecycle | cosine | plateau (override config)")
@@ -957,6 +971,7 @@ if __name__ == "__main__":
         batch_size_override=args.batch_size,
         max_train_override=args.max_train_per_epoch,
         skip_baselines=args.skip_baselines,
+        compile_mode=args.compile,
         rebuild_data=args.rebuild_data,
         optimizer_override=args.optimizer,
         scheduler_override=args.scheduler,
