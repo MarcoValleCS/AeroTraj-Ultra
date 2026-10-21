@@ -1,0 +1,103 @@
+{
+  "device": "NVIDIA GeForce RTX 4070",
+  "config": "config_90d_300s_hyp.json",
+  "repeat": 100,
+  "results": {
+    "1": {
+      "eager_nograd": {
+        "gpu_ms": 24.276975631713867
+      },
+      "eager_inference_mode": {
+        "gpu_ms": 19.242416381835938,
+        "maxdiff_vs_eager": 0.0
+      },
+      "compile_default": {
+        "gpu_ms": 8.705535888671875,
+        "maxdiff_vs_eager": 0.010833740234375,
+        "first_call_ms": 15491.985499998918
+      },
+      "compile_reduce-overhead": {
+        "gpu_ms": 5.494783878326416,
+        "maxdiff_vs_eager": 0.010833740234375,
+        "first_call_ms": 7062.146600001142
+      },
+      "compile_max-autotune-no-cudagraphs": {
+        "gpu_ms": 9.044191837310791,
+        "maxdiff_vs_eager": 0.010833740234375,
+        "first_call_ms": 72596.4555999999
+      }
+    },
+    "8": {
+      "eager_nograd": {
+        "gpu_ms": 24.74708843231201
+      },
+      "eager_inference_mode": {
+        "gpu_ms": 20.082592010498047,
+        "maxdiff_vs_eager": 0.0
+      },
+      "compile_default": {
+        "gpu_ms": 9.688096046447754,
+        "maxdiff_vs_eager": 0.05816650390625,
+        "first_call_ms": 23787.87630000079
+      },
+      "compile_reduce-overhead": {
+        "gpu_ms": 4.08513617515564,
+        "maxdiff_vs_eager": 0.05816650390625,
+        "first_call_ms": 14931.532100001277
+      },
+      "compile_max-autotune-no-cudagraphs": {
+        "gpu_ms": 11.269248008728027,
+        "maxdiff_vs_eager": 0.05816650390625,
+        "first_call_ms": 88849.35270000096
+      }
+    },
+    "64": {
+      "eager_nograd": {
+        "gpu_ms": 26.383872032165527
+      },
+      "eager_inference_mode": {
+        "gpu_ms": 18.671711921691895,
+        "maxdiff_vs_eager": 0.0
+      },
+      "compile_default": {
+        "gpu_ms": 8.384511947631836,
+        "maxdiff_vs_eager": 1.34844970703125,
+        "first_call_ms": 2933.6938000014925
+      },
+      "compile_reduce-overhead": {
+        "gpu_ms": 3.8568639755249023,
+        "maxdiff_vs_eager": 1.34844970703125,
+        "first_call_ms": 3829.752699999517
+      },
+      "compile_max-autotune-no-cudagraphs": {
+        "gpu_ms": 9.003520011901855,
+        "maxdiff_vs_eager": 1.34844970703125,
+        "first_call_ms": 21966.62859999924
+      }
+    },
+    "512": {
+      "eager_nograd": {
+        "gpu_ms": 22.956543922424316
+      },
+      "eager_inference_mode": {
+        "gpu_ms": 18.30348777770996,
+        "maxdiff_vs_eager": 0.0
+      },
+      "compile_default": {
+        "gpu_ms": 8.459775924682617,
+        "maxdiff_vs_eager": 1.33935546875,
+        "first_call_ms": 10.721399999965797
+      },
+      "compile_reduce-overhead": {
+        "gpu_ms": 6.466560125350952,
+        "maxdiff_vs_eager": 1.33935546875,
+        "first_call_ms": 16.312699999616598
+      },
+      "compile_max-autotune-no-cudagraphs": {
+        "gpu_ms": 8.399872303009033,
+        "maxdiff_vs_eager": 1.33935546875,
+        "first_call_ms": 11.93760000023758
+      }
+    }
+  }
+}

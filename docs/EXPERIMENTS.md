@@ -1171,6 +1171,68 @@ scarsa non è il tempo, è l'accuratezza della banda 60–300 s.
 Il fronte è CV → Deep LSTM → FlightBERT++ V2 → AeroTraj-Ultra → AeroTraj-Ultra + retrieval;
 **ASCENT, CFM e DDPM sono dominati** (contemporaneamente più lenti *e* meno accurati).
 
+### 6.11 Ottimizzazione della latenza (`bench_opt.py`, `check_compile_quality.py`, `bench_retrieval_block.py`)
+
+Obiettivo: ridurre la latenza **senza toccare la qualità**. Ogni tecnica è stata adottata
+solo dopo un controllo di equivalenza numerica su 24 576 finestre di test
+(`results_bench/compile_quality.json`).
+
+**Risultati adottati** (batch 1, end-to-end, H2D inclusa; RTX 4070, host libero):
+
+| variante | latenza | guadagno | MDE | ΔMDE |
+|---|---:|---:|---:|---:|
+| eager + `no_grad` (baseline precedente) | 19,59 ms | — | 1000,24 m | — |
+| eager + `torch.inference_mode()` | **15,7–18,3 ms** | **1,20×** | 1000,24 m | **0,000 %** |
+| `torch.compile(reduce-overhead)` | **4,1–5,5 ms** | **4,4–6,1×** | 1000,25 m | +0,0014 % |
+
+Throughput (aerei/s): eager 55 · 5 964 · 27 662 · 56 986 a batch 1 · 128 · 512 · 4096;
+**compiled 181 · 16 907 · 70 744 · 69 760**. A batch 512 il modello compilato scende a
+**14 µs per aereo**, cioè il costo *marginale* misurato in §6.10: l'overhead di lancio è
+sparito.
+
+1. **`torch.inference_mode()`**: −20 % e output **bit-identico** (`max|Δ| = 0,00e+00`).
+2. **`torch.compile(reduce-overhead)`**: stesso meccanismo dei 144→75 ms dello step di
+   training (§6.4); inductor fonde i ~600 kernel minimi.
+3. **Il prezzo in qualità del compile è nullo in aggregato, e capito**: il decoder Gray-Code
+   soglia a `probs ≥ 0.5`, quindi il rumore float si amplifica in un bit-flip discreto su
+   una coda di finestre — p50 **0,79 m**, p90 1,79 m, p99 7,4 m, p99,9 29,1 m; 27,3 % delle
+   finestre oltre 1 m, 0,53 % oltre 10 m, **0,06 % oltre 100 m**. Ma **MDE 1000,24 → 1000,25 m
+   (+0,0014 %)** e la peggiore variazione per orizzonte è **+0,076 m** (a 300 s). La coda
+   discreta è una proprietà dell'architettura (STE), non di `torch.compile`.
+
+**Il collo residuo è la ricerca del retrieval, non la rete.** A batch 512 il forward
+compilato costa **6,6 ms**, la `top-k` su 342 572 candidati **~20 ms**. Non sono i FLOP (17
+GFLOP a batch 4096, <1 ms su una 4070): è traffico + lancio di kernel.
+
+| leva | effetto | vicini | verdetto |
+|---|---|---|---|
+| `block=16` invece di 256 (query per blocco) | **−12 %** a batch 4096 | **identici** | **adottata** (nuovo default) |
+| top-k bloccato sui candidati (`cand_block=16k`) | ≈ −12 %, e **−20× di picco** (351 MB → 17 MB) | identici | **adottata** |
+| distanze in fp16 | −30 % | **diversi sul 99,9 % delle query** | **scartata** |
+| pool con 1 candidato per volo (342 572 → 75 624) | **5,5× più veloce** | pool diverso ⇒ MDE **+0,127 %** | **opt-in** |
+
+Il pool potato è l'unica leva che rimuove il *traffico* invece di riorganizzarlo, e il
+costo è reale: +1,21 m di MDE (949,29 → 950,50 m su 12 288 finestre), concentrato sui lunghi
+(+8,9 m a 300 s). Esposto come `build_pool(..., one_per_flight=True)`, **non** default: il
+default conserva la qualità.
+
+**Scartate, con la ragione** (registrare i tentativi falliti è utile quanto registrare quelli riusciti):
+
+* **grafo CUDA catturato a mano**: dopo la cattura l'allocator CUDA restituisce
+  `Offset increment outside graph capture encountered unexpectedly` e **ogni allocazione
+  successiva fallisce**, avvelenando `torch.compile` per il resto del processo. Le
+  cudagraph-tree di inductor (`reduce-overhead`) fanno lo stesso lavoro correttamente.
+* **distanze fp16**: −30 % ma cambiano i vicini sul 99,9 % delle query (i descrittori di
+  voli diversi sono quasi a pari distanza ⇒ l'arrotondamento riordina).
+
+**Interfaccia pratica**: `inference.py` → `FastPredictor` (compile + `inference_mode` +
+`warmup()` per pagare una volta sola i 7–15 s di compilazione).
+
+**Nota di misura**: i numeri assoluti sono stati presi con l'host libero; il percorso di
+retrieval lancia centinaia di kernel, quindi la sua latenza è sensibile al carico CPU — i
+confronti *relativi* sono tutti interni a una stessa run, dove il carico è comune alle due
+braccia.
+
 ---
 
 ## 7. Funzionalità e limiti noti

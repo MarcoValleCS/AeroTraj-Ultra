@@ -128,10 +128,17 @@ class RetrievalIndex:
         self.w = descriptor_weights(device)
 
     # -- search -------------------------------------------------------- #
-    def search(self, q_desc: torch.Tensor, k: int = 8, block: int = 256,
+    def search(self, q_desc: torch.Tensor, k: int = 8, block: int = 16,
                exclude_self: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         q_desc [B,6] -> (idx [B,k], dist [B,k]) of the k nearest candidates.
+
+        `block` is the number of queries per chunk.  It is a pure memory-layout
+        parameter: the returned neighbours are identical for every value (checked
+        in bench_retrieval_block.py), but the cost is not.  At batch 4096 a chunk
+        of 16 is 12 % faster than 256, because the [block, M] distance matrix
+        written per chunk stops evicting the candidate matrix from the L2 cache;
+        below 16 the kernel-launch overhead takes over.
         """
         q = q_desc * self.w
         cq = self.cand_desc * self.w
@@ -217,15 +224,21 @@ class RetrievalPool:
         self._flight_start = torch.as_tensor(starts, dtype=torch.long, device=device)
         self._flight_end = torch.as_tensor(bounds, dtype=torch.long, device=device)
         self._flight_order = torch.as_tensor(order, dtype=torch.long, device=device)
-        # dense map flight id -> row in the CSR structure
-        self._flight_row = {int(f): i for i, f in enumerate(uniq)}
+        # `_flight_ids` is sorted, so the flight-id -> row lookup is a
+        # torch.searchsorted on the GPU: the previous Python dict cost one
+        # device synchronisation per query block (`q_flight.tolist()`).
 
-    def _mask_same_flight(self, d2: torch.Tensor, q_flight: torch.Tensor) -> None:
-        """Set to +inf the columns whose candidate belongs to the query's flight."""
-        rows = torch.as_tensor(
-            [self._flight_row.get(int(f), 0) for f in q_flight.tolist()],
-            dtype=torch.long, device=self.device,
-        )
+    def _mask_same_flight(self, d2: torch.Tensor, q_flight: torch.Tensor,
+                          offset: int = 0, width: Optional[int] = None) -> None:
+        """
+        Set to +inf the columns whose candidate belongs to the query's flight.
+
+        `offset`/`width` restrict the operation to one candidate slice when the
+        search is blocked over candidates (see `search`), so that the masking
+        cost is proportional to the slice and not to the whole pool.
+        """
+        rows = torch.searchsorted(self._flight_ids, q_flight.long())
+        rows = rows.clamp(max=len(self._flight_ids) - 1)
         starts = self._flight_start[rows]
         lens = self._flight_end[rows] - starts
         total = int(lens.sum().item())
@@ -236,26 +249,59 @@ class RetrievalPool:
         rep = torch.repeat_interleave(torch.arange(len(lens), device=self.device), lens)
         within = ar - offs[rep]
         flat = self._flight_order[starts[rep] + within]
+        if width is not None:
+            inside = (flat >= offset) & (flat < offset + width)
+            flat = flat[inside] - offset
         d2.view(-1).scatter_(0, flat, float("inf"))
 
-    def search(self, q_desc: torch.Tensor, k: int = 8, block: int = 256,
-               q_flight: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def search(self, q_desc: torch.Tensor, k: int = 8, block: int = 16,
+               q_flight: Optional[torch.Tensor] = None,
+               cand_block: Optional[int] = 16384) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         q_desc [B,6] -> (idx [B,k], dist [B,k]).
         If `q_flight` is given, the candidates of the same flight are excluded.
+
+        The distances are computed in candidate slices of `cand_block` with a
+        running top-k.  Materialising the whole [block, M] matrix costs
+        256 x 342 572 x 4 B = 351 MB per query block (5.6 GB of DRAM traffic at
+        B = 4096); the sliced version keeps the working set inside the L2 cache
+        (256 x 16 384 x 4 B = 17 MB).  The returned k nearest neighbours are the
+        same; `cand_block=None` restores the single-shot behaviour.
         """
         B = q_desc.shape[0]
         out_idx = torch.empty((B, k), dtype=torch.long, device=self.device)
         out_d = torch.empty((B, k), dtype=torch.float32, device=self.device)
+        if cand_block is None:
+            cand_block = self.M
         for s in range(0, B, block):
             qb = q_desc[s:s + block]
-            d2 = (qb ** 2).sum(dim=1, keepdim=True) - 2.0 * (qb @ self.cand_desc.T) + self._sq[None, :]
-            if q_flight is not None:
-                self._mask_same_flight(d2, q_flight[s:s + block])
-            kk = min(k, self.M)
-            dd, ii = torch.topk(d2, kk, dim=1, largest=False)
-            out_idx[s:s + block] = ii
-            out_d[s:s + block] = dd
+            nb = qb.shape[0]
+            q2 = (qb ** 2).sum(dim=1, keepdim=True)                     # [nb,1]
+            best_d = torch.empty((nb, 0), device=self.device)
+            best_i = torch.empty((nb, 0), dtype=torch.long, device=self.device)
+            for c0 in range(0, self.M, cand_block):
+                width = min(cand_block, self.M - c0)
+                cb = self.cand_desc[c0:c0 + width]
+                d2 = q2 - 2.0 * (qb @ cb.T) + self._sq[c0:c0 + width][None, :]
+                if q_flight is not None:
+                    self._mask_same_flight(d2, q_flight[s:s + block], c0, width)
+                kk = min(k, width)
+                cd, ci = torch.topk(d2, kk, dim=1, largest=False)
+                ci = ci + c0
+                if best_i.shape[1] == 0:
+                    best_d, best_i = cd, ci
+                else:
+                    all_d = torch.cat([best_d, cd], dim=1)
+                    all_i = torch.cat([best_i, ci], dim=1)
+                    best_d, sel = torch.topk(all_d, min(k, all_d.shape[1]),
+                                             dim=1, largest=False)
+                    best_i = all_i.gather(1, sel)
+            if best_i.shape[1] < k:                      # only if M < k
+                pad = k - best_i.shape[1]
+                best_d = torch.cat([best_d, best_d.new_full((nb, pad), float("inf"))], 1)
+                best_i = torch.cat([best_i, best_i.new_zeros((nb, pad))], 1)
+            out_idx[s:s + block] = best_i
+            out_d[s:s + block] = best_d
         return out_idx, out_d
 
     def context(self, q_desc: torch.Tensor, q_x: torch.Tensor, k: int = 8,
@@ -298,12 +344,27 @@ def anchor_flight_ids(dataset) -> np.ndarray:
 
 def build_pool(dataset, stride: int = 16, device: torch.device = torch.device("cuda"),
                batch: int = 4096, verbose: bool = True,
-               pos_weight: float = 1.0) -> RetrievalPool:
+               pos_weight: float = 1.0, one_per_flight: bool = False) -> RetrievalPool:
     """
     Build the retrieval pool from the TRAIN split: descriptors, futures and
     flight ids of the candidate windows.
+
+    `one_per_flight=True` keeps only the first window of every flight, shrinking
+    the pool to 75 624 candidates (-78 %).  Measured (check_pool_quality.py): the
+    search becomes 5.5x cheaper at batch 4096 but the end-to-end MDE grows by
+    +0.13 % (mostly at 300 s, +8.9 m), so this is an OPT-IN throughput/quality
+    trade-off and NOT the default.
     """
     anchors = dataset.anchors[::stride]
+    flights = anchor_flight_ids(dataset)[::stride]
+    if one_per_flight:
+        seen, keep = set(), []
+        for x in flights:
+            k = int(x)
+            keep.append(k not in seen)
+            seen.add(k)
+        keep = np.asarray(keep, dtype=bool)
+        anchors, flights = anchors[keep], flights[keep]
     descs, vals = [], []
     for s in range(0, len(anchors), batch):
         x, y = dataset.get_batch_from_anchors(anchors[s:s + batch], device)
@@ -313,7 +374,6 @@ def build_pool(dataset, stride: int = 16, device: torch.device = torch.device("c
             print(f"  [pool] {min(s+batch, len(anchors))}/{len(anchors)}", flush=True)
     desc = np.concatenate(descs, axis=0).astype(np.float32)
     val = np.concatenate(vals, axis=0).astype(np.float32)
-    flights = anchor_flight_ids(dataset)[::stride]
     if verbose:
         print(f"  [pool] {desc.shape[0]:,} candidati, {len(np.unique(flights)):,} voli distinti")
     return RetrievalPool(desc, val, flights, device, pos_weight=pos_weight)

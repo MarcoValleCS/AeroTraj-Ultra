@@ -776,6 +776,91 @@ CV → Deep LSTM → FlightBERT++ V2 → AeroTraj-Ultra → AeroTraj-Ultra + ret
 and DDPM are **dominated**, i.e. they are at the same time slower *and* less accurate than a
 model in this comparison. Reproduce with `plot_pareto.py`.
 
+### 8.6 What the inference optimisations buy
+
+Every technique below was adopted only after a **numerical-equivalence check**: the
+prediction and the 3-D ECEF error are compared against the eager reference on 24,576 test
+windows (`check_compile_quality.py`, `results_bench/compile_quality.json`), so a speed-up
+is never traded for accuracy.
+
+| variant (batch 1, end-to-end, incl. H2D) | latency | speed-up | MDE | ΔMDE |
+|---|---:|---:|---:|---:|
+| eager + `torch.no_grad()` (the §8.1 baseline) | 19.59 ms | — | 1000.24 m | — |
+| eager + `torch.inference_mode()` | **15.7–18.3 ms** | **1.20×** | 1000.24 m | **0.000 %** |
+| `torch.compile(reduce-overhead)` | **4.1–5.5 ms** | **4.4–6.1×** | 1000.25 m | +0.0014 % |
+
+| throughput (aircraft/s) | batch 1 | batch 128 | batch 512 | batch 4096 |
+|---|---:|---:|---:|---:|
+| eager | 55 | 5,964 | 27,662 | 56,986 |
+| **compiled** | **181** | **16,907** | **70,744** | **69,760** |
+
+**1. `torch.inference_mode()` instead of `no_grad()` — 20 % for free.** `no_grad` still
+maintains autograd's version counters on every tensor; `inference_mode` removes them. The
+output is **bit-identical** (`max |Δ| = 0.00e+00`).
+
+**2. `torch.compile(mode="reduce-overhead")` — 4.4–6.1× at batch 1, 2.9× at batch 512.**
+This is the same mechanism that gave the 1.9× training speed-up (lab notebook §6.4):
+inductor fuses the ~600 tiny kernels that make the model launch-bound (§8.2). At batch 512
+the compiled model reaches 14 µs per aircraft, i.e. it finally operates at the *marginal*
+cost measured in §8.2 (12.6 µs) instead of the average — the launch overhead is gone.
+
+**3. The quality cost of compilation is zero in aggregate, and it is understood.** The
+compiled model is **not bit-identical**, and the reason is structural: the Gray-Code
+decoder thresholds at `probs ≥ 0.5`, so float noise is amplified into a discrete bit flip
+on a tail of windows. Measured on 24,576 windows:
+
+| | value |
+|---|---:|
+| physical distance between the two predictions | p50 **0.79 m**, p90 1.79 m, p99 7.4 m, p99.9 29.1 m |
+| windows differing by more than 1 m / 10 m / 100 m | 27.3 % / 0.53 % / **0.06 %** |
+| **3-D ECEF MDE** | 1000.24 m → **1000.25 m (+0.0014 %)** |
+| worst per-horizon change | **+0.076 m** (at 300 s) |
+
+The discrete tail is a property of the architecture, not of `torch.compile`: any float
+reassociation reaches it. Because the metric, the per-horizon profile and therefore the
+conformal band are unchanged, compilation is enabled by default in the inference path.
+
+**4. The retrieval search, not the network, is the remaining bottleneck.** At batch 512 the
+compiled forward pass costs **6.6 ms** while the retrieval `top-k` over 342,572 candidates
+costs **~20 ms** — three times the model. The cause is again launch overhead plus the
+distance-matrix traffic, not FLOPs (the whole distance computation is 17 GFLOP at batch
+4096, i.e. <1 ms of pure compute on an RTX 4070). Three levers were measured:
+
+| lever | effect | neighbours | verdict |
+|---|---|---|---|
+| `block=16` instead of 256 (queries per chunk) | **−12 %** at batch 4096 | **identical** | **adopted** (new default) |
+| candidate-blocked top-k (`cand_block=16k`) | ≈ −12 %, and −20× peak memory (351 MB → 17 MB) | identical | **adopted** |
+| fp16 distances | −30 % | **differ on 99.9 % of queries** | **rejected** (§9.2) |
+| pool with one candidate per flight (342,572 → 75,624) | **−82 %** of candidates, **5.5×** faster search | different pool ⇒ MDE **+0.127 %** | **opt-in only** |
+
+The pruned pool is the only lever that removes the *traffic* rather than rearranging it,
+and its cost is real: +1.21 m of MDE (949.29 → 950.50 m on 12,288 windows), concentrated at
+the long horizons (+8.9 m at 300 s). It is therefore exposed as
+`build_pool(..., one_per_flight=True)` and is **not** the default: the default keeps the
+quality, and deployments that are throughput-bound can trade 0.13 % of accuracy for 5.5×.
+
+**5. Rejected: a hand-captured CUDA graph.** Capturing the forward pass with
+`torch.cuda.CUDAGraph` is the textbook way to remove launch overhead, and it fails on this
+stack in a way worth recording: after the capture the CUDA caching allocator reports
+`Offset increment outside graph capture encountered unexpectedly` and **every subsequent
+allocation fails**, poisoning `torch.compile` for the rest of the process. Inductor's own
+CUDA-graph trees (`mode="reduce-overhead"`) do the same job correctly.
+
+**Practical interface.** `inference.py` exposes the optimised path as one object:
+
+```python
+from inference import FastPredictor
+fp = FastPredictor("config_90d_300s.json", "checkpoints_90/aerotraj_ultra_best.pt")
+fp.warmup(512)      # pay the one-off compile cost (7-15 s) up front
+pred = fp(x)        # [B, 13, 6], torch.inference_mode, compiled
+```
+
+**Measurement note.** The absolute numbers above were taken with the host otherwise idle.
+The retrieval path issues hundreds of kernel launches, so its latency is sensitive to CPU
+load (the per-call CUDA-event median included scheduling gaps when the same machine was
+concurrently building the 365-day dataset); the *relative* comparisons reported here were
+all taken within a single run, where the load is common to both arms.
+
 ---
 
 ## 9. Discussion

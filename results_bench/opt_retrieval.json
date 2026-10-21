@@ -1,0 +1,156 @@
+{
+  "n_candidates": 342572,
+  "k": 8,
+  "results": {
+    "1": {
+      "single_shot": {
+        "gpu_ms": 0.4909600019454956,
+        "identical_neighbours": true,
+        "n_queries_with_diff": 0,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 490.9600019454956
+      },
+      "blocked_16k": {
+        "gpu_ms": 6.3606719970703125,
+        "identical_neighbours": true,
+        "n_queries_with_diff": 0,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 6360.6719970703125
+      },
+      "blocked_64k": {
+        "gpu_ms": 2.5903199911117554,
+        "identical_neighbours": true,
+        "n_queries_with_diff": 0,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 2590.3199911117554
+      },
+      "blocked_4k": {
+        "gpu_ms": 25.637311935424805,
+        "identical_neighbours": true,
+        "n_queries_with_diff": 0,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 25637.311935424805
+      }
+    },
+    "64": {
+      "single_shot": {
+        "gpu_ms": 2.6112000942230225,
+        "identical_neighbours": true,
+        "n_queries_with_diff": 0,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 40.800001472234726
+      },
+      "blocked_16k": {
+        "gpu_ms": 9.586592197418213,
+        "identical_neighbours": false,
+        "n_queries_with_diff": 1,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 149.79050308465958
+      },
+      "blocked_64k": {
+        "gpu_ms": 2.7359999418258667,
+        "identical_neighbours": false,
+        "n_queries_with_diff": 1,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 42.74999909102917
+      },
+      "blocked_4k": {
+        "gpu_ms": 24.75931167602539,
+        "identical_neighbours": false,
+        "n_queries_with_diff": 1,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 386.86424493789673
+      }
+    },
+    "512": {
+      "single_shot": {
+        "gpu_ms": 20.560383796691895,
+        "identical_neighbours": true,
+        "n_queries_with_diff": 0,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 40.15699960291386
+      },
+      "blocked_16k": {
+        "gpu_ms": 17.441280364990234,
+        "identical_neighbours": false,
+        "n_queries_with_diff": 9,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 34.06500071287155
+      },
+      "blocked_64k": {
+        "gpu_ms": 20.85683250427246,
+        "identical_neighbours": false,
+        "n_queries_with_diff": 12,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 40.73600098490715
+      },
+      "blocked_4k": {
+        "gpu_ms": 81.10591888427734,
+        "identical_neighbours": false,
+        "n_queries_with_diff": 9,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 158.4099978208542
+      }
+    },
+    "2048": {
+      "single_shot": {
+        "gpu_ms": 81.8334732055664,
+        "identical_neighbours": true,
+        "n_queries_with_diff": 0,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 39.95775058865547
+      },
+      "blocked_16k": {
+        "gpu_ms": 70.80574417114258,
+        "identical_neighbours": false,
+        "n_queries_with_diff": 46,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 34.57311727106571
+      },
+      "blocked_64k": {
+        "gpu_ms": 83.62290954589844,
+        "identical_neighbours": false,
+        "n_queries_with_diff": 51,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 40.83149880170822
+      },
+      "blocked_4k": {
+        "gpu_ms": 290.15760803222656,
+        "identical_neighbours": false,
+        "n_queries_with_diff": 40,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 141.67851954698563
+      }
+    },
+    "4096": {
+      "single_shot": {
+        "gpu_ms": 163.9188461303711,
+        "identical_neighbours": true,
+        "n_queries_with_diff": 0,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 40.01924954354763
+      },
+      "blocked_16k": {
+        "gpu_ms": 146.2287368774414,
+        "identical_neighbours": false,
+        "n_queries_with_diff": 74,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 35.70037521421909
+      },
+      "blocked_64k": {
+        "gpu_ms": 167.20608520507812,
+        "identical_neighbours": false,
+        "n_queries_with_diff": 84,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 40.82179814577103
+      },
+      "blocked_4k": {
+        "gpu_ms": 583.6681213378906,
+        "identical_neighbours": false,
+        "n_queries_with_diff": 70,
+        "max_rel_dist_diff": 0.0,
+        "us_per_query": 142.49709993600845
+      }
+    }
+  }
+}
