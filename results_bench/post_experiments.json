@@ -1,0 +1,15 @@
+{
+  "single:ours": 991.5932006835938,
+  "single:fbpp_v2": 1219.836669921875,
+  "single:lstm": 1296.4456787109375,
+  "ens:ours+fbpp_v2": 1051.4217529296875,
+  "ens:ours+lstm": 1087.03955078125,
+  "ens:ours+fbpp_v2+lstm": 1082.6163330078125,
+  "mcdropout:mean": 995.562744140625,
+  "mcdropout:single": 1005.79931640625,
+  "mcdropout:minADE_k": 905.391845703125,
+  "exp3_anchor_noise_m": 75.39225580763824,
+  "exp3_5s_hold_m": 1019.8162231445312,
+  "exp3_5s_doppler_m": 1034124928.0,
+  "exp3_5s_least_squares_m": 114.79419927800456
+}

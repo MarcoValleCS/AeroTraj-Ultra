@@ -1,0 +1,269 @@
+{
+  "device": "cuda",
+  "horizon_seconds": [
+    5,
+    10,
+    15,
+    20,
+    30,
+    45,
+    60,
+    90,
+    120,
+    150,
+    180,
+    240,
+    300
+  ],
+  "gpu": "NVIDIA GeForce RTX 4070",
+  "batch1_latency": {
+    "AeroTraj-Ultra": {
+      "median_ms": 19.591199999922537,
+      "p95_ms": 23.38640000079976,
+      "gpu_ms": 19.340288162231445,
+      "wall_pass_medians_ms": [
+        19.61,
+        19.59,
+        19.32
+      ],
+      "gpu_pass_medians_ms": [
+        19.99,
+        19.04,
+        19.34
+      ],
+      "gpu_spread_pct": 4.892088970274898,
+      "n": 200
+    },
+    "AeroTraj-Ultra + retrieval": {
+      "median_ms": 20.121550001022115,
+      "p95_ms": 23.883735000345034,
+      "gpu_ms": 20.19430446624756,
+      "wall_pass_medians_ms": [
+        20.32,
+        20.12,
+        20.07
+      ],
+      "gpu_pass_medians_ms": [
+        20.19,
+        20.11,
+        20.28
+      ],
+      "gpu_spread_pct": 0.8138552989873137,
+      "n": 200
+    },
+    "FlightBERT++ V2": {
+      "median_ms": 9.773799999493349,
+      "p95_ms": 11.096915000416628,
+      "gpu_ms": 9.780191898345947,
+      "wall_pass_medians_ms": [
+        9.76,
+        9.78,
+        9.77
+      ],
+      "gpu_pass_medians_ms": [
+        9.73,
+        9.78,
+        9.88
+      ],
+      "gpu_spread_pct": 1.4751433518429955,
+      "n": 200
+    },
+    "Deep LSTM": {
+      "median_ms": 0.6240500006242655,
+      "p95_ms": 1.2461650001569067,
+      "gpu_ms": 0.6127520203590393,
+      "wall_pass_medians_ms": [
+        0.64,
+        0.62,
+        0.6
+      ],
+      "gpu_pass_medians_ms": [
+        0.62,
+        0.61,
+        0.61
+      ],
+      "gpu_spread_pct": 2.0262691467434766,
+      "n": 200
+    },
+    "ASCENT": {
+      "median_ms": 12.05484999991313,
+      "p95_ms": 13.84841500102992,
+      "gpu_ms": 11.981824398040771,
+      "wall_pass_medians_ms": [
+        12.05,
+        12.05,
+        12.09
+      ],
+      "gpu_pass_medians_ms": [
+        11.98,
+        11.97,
+        12.05
+      ],
+      "gpu_spread_pct": 0.660334824821063,
+      "n": 200
+    },
+    "CFM (20 step, 1 campione)": {
+      "median_ms": 93.25589999843942,
+      "p95_ms": 102.17274499946143,
+      "gpu_ms": 93.40100860595703,
+      "wall_pass_medians_ms": [
+        93.97,
+        93.26,
+        93.13
+      ],
+      "gpu_pass_medians_ms": [
+        94.51,
+        93.4,
+        93.4
+      ],
+      "gpu_spread_pct": 1.1915940010081474,
+      "n": 200
+    },
+    "DDPM (50 step, 1 campione)": {
+      "median_ms": 262.3052999997526,
+      "p95_ms": 357.1210799994332,
+      "gpu_ms": 260.4170227050781,
+      "wall_pass_medians_ms": [
+        262.31,
+        253.65,
+        275.71
+      ],
+      "gpu_pass_medians_ms": [
+        256.74,
+        260.42,
+        264.78
+      ],
+      "gpu_spread_pct": 3.084405939288755,
+      "n": 200
+    },
+    "CV / Doppler": {
+      "median_ms": 0.4592000004777219,
+      "p95_ms": 1.179154999772436,
+      "gpu_ms": 0.45772799849510193,
+      "wall_pass_medians_ms": [
+        0.46,
+        0.46,
+        0.44
+      ],
+      "gpu_pass_medians_ms": [
+        0.49,
+        0.45,
+        0.46
+      ],
+      "gpu_spread_pct": 7.606266582102784,
+      "n": 200
+    }
+  },
+  "batch1_breakdown": {
+    "retrieval_ms": 1.0922999999820604,
+    "forward_ms": 22.30654999948456,
+    "full_ms": 20.121550001022115,
+    "n_candidates": 342572
+  },
+  "batch512_breakdown": {
+    "retrieval_ms": 20.776750000550237,
+    "forward_ms": 23.47144999930606
+  },
+  "budget": {
+    "ms_per_aircraft": 20.121550001022115,
+    "aircraft_per_s_single": 49.69796064166046,
+    "headroom_vs_1s_cycle": 49.69796064166046,
+    "headroom_vs_5s_cycle": 248.48980320830228
+  },
+  "throughput": {
+    "AeroTraj-Ultra": {
+      "1": {
+        "median_ms": 19.63814999908209,
+        "per_aircraft_ms": 19.63814999908209,
+        "aircraft_per_s": 50.92129350507768
+      },
+      "8": {
+        "median_ms": 20.33229999960895,
+        "per_aircraft_ms": 2.5415374999511187,
+        "aircraft_per_s": 393.46261859965983
+      },
+      "32": {
+        "median_ms": 20.220450001033896,
+        "per_aircraft_ms": 0.6318890625323093,
+        "aircraft_per_s": 1582.556273394697
+      },
+      "128": {
+        "median_ms": 20.210700000461657,
+        "per_aircraft_ms": 0.1578960937536067,
+        "aircraft_per_s": 6333.278906573063
+      },
+      "512": {
+        "median_ms": 20.850050000262854,
+        "per_aircraft_ms": 0.04072275390676339,
+        "aircraft_per_s": 24556.2960277575
+      },
+      "2048": {
+        "median_ms": 40.16504999890458,
+        "per_aircraft_ms": 0.019611840819777626,
+        "aircraft_per_s": 50989.60414728365
+      },
+      "4096": {
+        "median_ms": 70.9854999986419,
+        "per_aircraft_ms": 0.017330444335605932,
+        "aircraft_per_s": 57701.925042133465
+      }
+    },
+    "AeroTraj-Ultra + retrieval": {
+      "1": {
+        "median_ms": 22.854650000226684,
+        "per_aircraft_ms": 22.854650000226684,
+        "aircraft_per_s": 43.754772004387796
+      },
+      "8": {
+        "median_ms": 21.832749999703083,
+        "per_aircraft_ms": 2.7290937499628853,
+        "aircraft_per_s": 366.42200364630185
+      },
+      "32": {
+        "median_ms": 21.57415000056062,
+        "per_aircraft_ms": 0.6741921875175194,
+        "aircraft_per_s": 1483.2565824919384
+      },
+      "128": {
+        "median_ms": 21.516800000426883,
+        "per_aircraft_ms": 0.16810000000333503,
+        "aircraft_per_s": 5948.839976086618
+      },
+      "512": {
+        "median_ms": 33.65814999961003,
+        "per_aircraft_ms": 0.06573857421798834,
+        "aircraft_per_s": 15211.768917956932
+      },
+      "2048": {
+        "median_ms": 116.2304999998014,
+        "per_aircraft_ms": 0.056753173828028025,
+        "aircraft_per_s": 17620.159940837384
+      },
+      "4096": {
+        "median_ms": 231.4580999991449,
+        "per_aircraft_ms": 0.05650832519510374,
+        "aircraft_per_s": 17696.50748889381
+      }
+    }
+  },
+  "marginal_cost_ms_per_aircraft": 0.012550500610187879,
+  "fixed_overhead_ms": 19.57864949931235,
+  "overhead_share_of_batch1": 0.9993593807112255,
+  "fixed_overhead_source": {
+    "t_batch1_ms": 19.591199999922537,
+    "t_batch4096_ms": 70.9854999986419
+  },
+  "compile": {
+    "AeroTraj-Ultra compiled": {
+      "median_ms": 4.467599999770755,
+      "mean_ms": 4.421502000022883,
+      "p95_ms": 6.439190000946837,
+      "min_ms": 3.711299999849871,
+      "n": 100
+    }
+  },
+  "cold_start_ms": {
+    "base": 28.24940000027709,
+    "retrieval": 26.772000001074048
+  }
+}

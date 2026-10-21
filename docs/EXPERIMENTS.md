@@ -20,12 +20,17 @@ Pang, Alam, Lulli et al., AAMAS 2026).
 
 ## 0. Indice
 
+> 📄 Il **report tecnico in stile paper scientifico** — abstract, metodo formale, esperimenti,
+> ablation, calibrazione dell'incertezza, **latenza di inferenza**, limiti e risultati negativi —
+> è in [`PAPER.md`](PAPER.md). Questo documento resta il quaderno di laboratorio cronologico.
+
 1. [Risultato in sintesi](#1-risultato-in-sintesi)
 2. [Ambiente, esecuzione e stato dei dati](#2-ambiente-esecuzione-e-stato-dei-dati)
 3. [Metodologia](#3-metodologia)
 4. [Architettura del modello](#4-architettura-del-modello)
 5. [Risultati sperimentali](#5-risultati-sperimentali)
 6. [Benchmark dei modelli della letteratura](#6-benchmark-dei-modelli-della-letteratura-90-giorni-orizzonte-5-s--300-s)
+   - 6.9 **Latenza e throughput di inferenza** (quanto ci mette una previsione)
 7. [Funzionalità e limiti noti](#7-funzionalità-e-limiti-noti)
 8. [Riferimenti](#8-riferimenti)
 
@@ -1068,6 +1073,103 @@ dell'originale sul dataset italiano) per mantenere la metrica coerente col resto
    - **i priori categorici che il modello usa non esistono in OpenSky** (handicap dichiarato).
 3. Il confronto va quindi letto come *"architettura + loss + priori su questo dataset"*, non
    come *"codice vecchio contro codice nuovo"*.
+
+### 6.9 Latenza e throughput di inferenza (`bench_latency.py`)
+
+Obiettivo: **quanto ci mette una previsione**. Misurato su RTX 4070 con
+`bench_latency.py` (artefatti: `results_bench/latency.json`, `results_bench/LATENCY.md`).
+
+**Metodo.** Il caso operativo è **un solo aereo**, quindi il numero di testa è la latenza
+**end-to-end a batch 1**: la finestra 12 × 5 s viene spostata host→device, il modello (o
+modello + lookup di retrieval) gira, e il wall clock viene letto dopo `cuda.synchronize()`.
+Ogni modello è misurato in **3 blocchi indipendenti da 200 ripetizioni** (si riporta la
+mediana delle mediane + il p95 entro blocco). Il tempo **GPU** è riportato a parte come
+mediana di una misura **per chiamata con CUDA events** (una coppia di eventi attorno a una
+singola chiamata), con lo spread osservato fra i 3 blocchi: su una macchina Windows con
+clock GPU non bloccato il lato host è rumoroso, il tempo GPU no. `torch.no_grad()` attivo.
+
+**Latenza a batch 1** (mediana di 3 × 200 chiamate, end-to-end, H2D inclusa):
+
+| Modello | mediana [ms] | p95 [ms] | solo GPU [ms] | spread |
+|---|---:|---:|---:|---:|
+| CFM (20 step ODE, 1 campione) | 93,26 | 102,17 | 93,40 | ±1 % |
+| DDPM / MID (50 step, 1 campione) | 262,31 | 357,12 | 260,42 | ±3 % |
+| **AeroTraj-Ultra + retrieval** | **20,12** | 23,88 | 20,19 | ±1 % |
+| **AeroTraj-Ultra** | **19,59** | 23,39 | 19,34 | ±5 % |
+| ASCENT | 12,05 | 13,85 | 11,98 | ±1 % |
+| FlightBERT++ V2 | 9,77 | 11,10 | 9,78 | ±2 % |
+| Deep LSTM | 0,62 | 1,25 | 0,61 | ±2 % |
+| CV / Doppler | 0,46 | 1,18 | 0,46 | ±8 % |
+
+Una previsione per un aereo costa **19,6 ms** (20,1 ms con il prior di retrieval: **+0,5 ms**)
+e copre **tutto** l'orizzonte 5–300 s, perché il decoder è non autoregressivo. I due modelli
+generativi costano molto di più per un errore *peggiore*: CFM **4,7×** la nostra latenza e
+−72 % di accuratezza, DDPM **13×** e −4,3× di accuratezza. FlightBERT++ V2 è 2,0× più veloce
+e 23 % meno accurato: è il prezzo architetturale (tre teste + decoder Gray-Code + prior
+fisico contro una singola testa di regressione).
+
+**Throughput** (ms totali / µs per aereo / aerei al secondo):
+
+| batch | AeroTraj-Ultra | aerei/s | + retrieval | aerei/s |
+|---:|---:|---:|---:|---:|
+| 1 | 19,64 | 51 | 22,85 | 44 |
+| 8 | 20,33 | 393 | 21,83 | 366 |
+| 32 | 20,22 | 1 583 | 21,57 | 1 483 |
+| 128 | 20,21 | 6 333 | 21,52 | 5 949 |
+| 512 | 20,85 | 24 556 | 33,66 | 15 212 |
+| 2 048 | 40,17 | 50 990 | 116,23 | 17 620 |
+| 4 096 | 70,99 | **57 702** | 231,46 | 17 697 |
+
+**Il batch 1 è launch-bound, non compute-bound** (misurato senza profiler): il costo *medio*
+per aereo a batch 1 è 19 591 µs, ma il costo **marginale** di un aereo in più (pendenza fra
+batch 1 e batch 4096) è **12,6 µs**; il **99,94 %** della latenza a batch 1 (19,58 ms) è
+overhead fisso di lancio/scheduling. Due conferme indipendenti:
+
+* **batching**: il costo per aereo scende a **17,3 µs** a batch 4096 (**1 133×**), mentre il
+  tempo totale cresce solo da 19,6 ms a 71,0 ms per 4096× il lavoro;
+* **`torch.compile(mode="reduce-overhead")`**: la latenza a batch 1 scende da **19,59 ms a
+  4,47 ms** — **4,4× a matematica invariata**, possibile solo se il tempo era overhead
+  per-kernel.
+
+Conseguenza pratica: il deploy a singolo aereo non ha senso, va dato uno **snapshot** di
+traffico. A batch 512 la pipeline completa costa 33,7 ms per 512 aerei (**15 200 aerei/s**),
+cioè uno snapshot europeo da 5 000 aerei in **~330 ms**.
+
+**La latenza è piatta nell'orizzonte** (`bench_latency_horizon.py`, pesi casuali: il
+checkpoint non cambia nessuna forma). Stessa architettura ricostruita con H orizzonti:
+
+| orizzonti | griglia | latenza GPU [ms] | parametri |
+|---:|---|---:|---:|
+| 1 | 5 s | 19,15 | 1 320 046 |
+| 2 | 5–10 s | 19,26 | 1 320 190 |
+| 4 | 5–20 s | 19,22 | 1 320 478 |
+| 8 | 5–90 s | 19,94 | 1 321 054 |
+| 13 | 5–300 s | **22,36** | 1 321 774 |
+
+Prevedere 13 orizzonti che coprono 5–300 s costa **1,17×** prevederne uno a 5 s: estendere
+l'orizzonte di due ordini di grandezza costa il **17 %**. Un decoder autoregressivo pagherebbe
+un forward per passo (~60× per 5–300 s a passo 5 s) — esattamente il profilo di costo che CFM
+e DDPM mostrano con 20 e 50 step.
+
+**Limite misurato del retrieval su scala.** Il retrieval **smette di scalare oltre batch
+~512**: il top-k è una scansione `O(B × M)` su M = 342 572 candidati, e a batch 512 costa già
+quanto l'intero forward (20,8 ms contro 23,5 ms). Per l'inferenza di flotta il top-k esatto va
+sostituito da una ricerca indicizzata o approssimata — è un limite misurato, non ipotetico.
+
+**Cold start**: costruzione del modello + trasferimento pesi su GPU = 28,2 ms (base) /
+26,8 ms (retrieval), trascurabile; il costo di `torch.compile` è un una-tantum al primo
+forward.
+
+**Budget operativo**: 49,7 aerei/s in sequenza contro un ciclo ADS-B da 1 s, 57 702 aerei/s
+batchato. Il modello **non è latency-critical** in nessun deploy ATM realistico: la risorsa
+scarsa non è il tempo, è l'accuratezza della banda 60–300 s.
+
+**Figura** accuracy/latenza (Pareto), generata da `plot_pareto.py`:
+
+![pareto](figures/pareto_accuracy_latency.png)
+
+Il fronte è CV → Deep LSTM → FlightBERT++ V2 → AeroTraj-Ultra → AeroTraj-Ultra + retrieval;
+**ASCENT, CFM e DDPM sono dominati** (contemporaneamente più lenti *e* meno accurati).
 
 ---
 

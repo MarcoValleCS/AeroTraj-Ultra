@@ -1,0 +1,74 @@
+{
+  "device": "cuda",
+  "runs": [
+    {
+      "n_horizons": 1,
+      "horizons_s": [
+        5
+      ],
+      "latency_gpu_ms": 19.154800415039062,
+      "params": 1320046
+    },
+    {
+      "n_horizons": 2,
+      "horizons_s": [
+        5,
+        10
+      ],
+      "latency_gpu_ms": 19.25887966156006,
+      "params": 1320190
+    },
+    {
+      "n_horizons": 4,
+      "horizons_s": [
+        5,
+        10,
+        15,
+        20
+      ],
+      "latency_gpu_ms": 19.219951629638672,
+      "params": 1320478
+    },
+    {
+      "n_horizons": 8,
+      "horizons_s": [
+        5,
+        10,
+        15,
+        20,
+        30,
+        45,
+        60,
+        90
+      ],
+      "latency_gpu_ms": 19.938560485839844,
+      "params": 1321054
+    },
+    {
+      "n_horizons": 13,
+      "horizons_s": [
+        5,
+        10,
+        15,
+        20,
+        30,
+        45,
+        60,
+        90,
+        120,
+        150,
+        180,
+        240,
+        300
+      ],
+      "latency_gpu_ms": 22.362112045288086,
+      "params": 1321774
+    }
+  ],
+  "summary": {
+    "latency_H1_ms": 19.154800415039062,
+    "latency_H13_ms": 22.362112045288086,
+    "ratio_13_over_1": 1.1674416627035622,
+    "max_horizon_s": 300
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "n_windows": 20000,
+  "k": 8,
+  "stride": 32,
+  "horizon_seconds": [
+    5,
+    10,
+    15,
+    20,
+    30,
+    45,
+    60,
+    90,
+    120,
+    150,
+    180,
+    240,
+    300
+  ],
+  "mde_m": {
+    "5s": {
+      "retrieval_mean": 136.58689880371094,
+      "cv_doppler": 65.20014190673828,
+      "aerotraj_ultra": 61.98949432373047
+    },
+    "10s": {
+      "retrieval_mean": 231.0621795654297,
+      "cv_doppler": 77.3998794555664,
+      "aerotraj_ultra": 68.1043701171875
+    },
+    "15s": {
+      "retrieval_mean": 329.02886962890625,
+      "cv_doppler": 92.5684585571289,
+      "aerotraj_ultra": 75.22789001464844
+    },
+    "20s": {
+      "retrieval_mean": 433.1675109863281,
+      "cv_doppler": 115.04452514648438,
+      "aerotraj_ultra": 88.303955078125
+    },
+    "30s": {
+      "retrieval_mean": 651.479248046875,
+      "cv_doppler": 172.51968383789062,
+      "aerotraj_ultra": 122.56008911132812
+    },
+    "45s": {
+      "retrieval_mean": 1003.427978515625,
+      "cv_doppler": 293.53851318359375,
+      "aerotraj_ultra": 200.05943298339844
+    },
+    "60s": {
+      "retrieval_mean": 1378.8321533203125,
+      "cv_doppler": 452.6649475097656,
+      "aerotraj_ultra": 307.7645568847656
+    },
+    "90s": {
+      "retrieval_mean": 2185.879150390625,
+      "cv_doppler": 870.2318115234375,
+      "aerotraj_ultra": 589.515380859375
+    },
+    "120s": {
+      "retrieval_mean": 3054.814697265625,
+      "cv_doppler": 1411.6905517578125,
+      "aerotraj_ultra": 944.8018188476562
+    },
+    "150s": {
+      "retrieval_mean": 3970.294921875,
+      "cv_doppler": 2061.978515625,
+      "aerotraj_ultra": 1359.55126953125
+    },
+    "180s": {
+      "retrieval_mean": 4921.86376953125,
+      "cv_doppler": 2810.4130859375,
+      "aerotraj_ultra": 1826.143798828125
+    },
+    "240s": {
+      "retrieval_mean": 6922.013671875,
+      "cv_doppler": 4569.5234375,
+      "aerotraj_ultra": 2905.005615234375
+    },
+    "300s": {
+      "retrieval_mean": 9002.861328125,
+      "cv_doppler": 6631.06396484375,
+      "aerotraj_ultra": 4169.080078125
+    }
+  },
+  "overall": {
+    "retrieval_mean": 2632.40864445613,
+    "cv_doppler": 1509.5259628295898,
+    "aerotraj_ultra": 978.3159807645358
+  }
+}

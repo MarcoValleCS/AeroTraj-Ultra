@@ -8,6 +8,11 @@ OpenSky traffic, trained on a single GPU.**
 > accumulation), grounds every prediction in an analytical kinematic propagator, and fuses a
 > differentiable trust-region gate borrowed from multi-head action filtering.
 
+📄 **Technical report (paper-style, all the evidence): [`docs/PAPER.md`](docs/PAPER.md)** —
+method, experiments, ablations, uncertainty calibration, **inference latency**, negative
+results. Formal spec: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Lab notebook:
+[`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md).
+
 | | |
 |---|---|
 | **Task** | 4D trajectory prediction from ADS-B state vectors (lon, lat, alt, vx, vy, vz) |
@@ -16,8 +21,9 @@ OpenSky traffic, trained on a single GPU.**
 | **Model** | `AeroTrajUltra`, 1 276 839 parameters, ~0.6 GFLOP/step |
 | **Hardware** | 1× RTX 4070 (12 GB) — full 80-epoch run in ~25 min |
 | **Result** | **991.6 m** 3-D ECEF mean distance error (5 s–300 s) — best of 10 compared models |
-| **Code** | `model.py` (architecture) · `run.py` (training) · `bench_models.py` (literature replications) | |
-| **Uncertainty** | multi-hypothesis head (K=8) + conformal calibration → certified 90 % band with a 47 % smaller radius |
+| **Speed** | 1 aircraft end-to-end in **19.6 ms** (20.1 ms incl. retrieval prior) · **57,702 aircraft/s** at batch 4096 · only 1.17× the cost of a single horizon |
+| **Code** | `model.py` (architecture) · `run.py` (training) · `bench_models.py` (literature replications) |
+| **Uncertainty** | multi-hypothesis head (K=8) + conformal calibration → certified 90 % band with a 56 % smaller radius |
 
 ---
 
@@ -418,6 +424,42 @@ launches per forward). Three exact optimisations plus `torch.compile` give a **1
 The Gray-Code reformulation is verified equivalent to machine precision (2e-16) on both values
 and gradients. Measured with `profile_training.py`.
 
+### 4.8 Inference speed
+
+Accuracy is useless in ATM if the prediction is not ready before the update cycle closes, so
+every model of the benchmark was timed on the same harness (`bench_latency.py`). The
+operational case is a **single aircraft**: 3 independent blocks of 200 repetitions, wall clock
+after `cuda.synchronize()`, plus a per-call CUDA-event measurement of the GPU-busy time.
+
+| Model | median [ms] | p95 [ms] | MDE [m] |
+|---|---:|---:|---:|
+| DDPM / MID (50 steps, 1 sample) | 262.31 | 357.12 | 4,300.5 |
+| CFM / FlowATC (20 ODE steps, 1 sample) | 93.26 | 102.17 | 1,704.3 |
+| **AeroTraj-Ultra + retrieval** | **20.12** | 23.88 | **957.2** |
+| **AeroTraj-Ultra** | **19.59** | 23.39 | 991.6 |
+| ASCENT | 12.05 | 13.85 | 2,348.9 |
+| FlightBERT++ V2 | 9.77 | 11.10 | 1,219.9 |
+| Deep LSTM | 0.62 | 1.25 | 1,296.4 |
+| CV / Doppler | 0.46 | 1.18 | 1,507.7 |
+
+**Findings.**
+
+* One aircraft, **whole 5–300 s horizon vector, in 19.6 ms**; the retrieval intent prior adds
+  only **+0.5 ms**. At 4096 aircraft the model sustains **57,702 aircraft/s** (17.3 µs each).
+* **The batch-1 case is launch-bound, not compute-bound.** The average cost per aircraft at
+  batch 1 is 19,591 µs but the *marginal* cost of one more aircraft is **12.6 µs**: **99.94 %**
+  of the single-aircraft latency is fixed per-call overhead. Confirmed twice over: batching
+  improves the per-aircraft cost by **1,133×**, and `torch.compile` takes batch 1 from
+  19.59 ms to **4.47 ms** (4.4×) with no change in the mathematics.
+* **Latency is flat in the horizon.** 13 horizons spanning 5–300 s cost **1.17×** a single
+  horizon (`bench_latency_horizon.py`). Autoregressive models pay per step, which is exactly
+  why CFM (20 steps) and DDPM (50 steps) are 4.7× and 13× slower here.
+* The two generative models are **dominated**: slower *and* less accurate than
+  AeroTraj-Ultra. See the Pareto figure `docs/figures/pareto_accuracy_latency.png`.
+* Measured limitation: the exact retrieval top-k is `O(B × M)` over 342,572 candidates and
+  **stops scaling after batch ~512** (at batch 512 it already costs as much as the whole
+  forward pass). Fleet-scale inference needs an indexed or approximate search.
+
 ---
 
 ## 5. Repository layout
@@ -430,11 +472,17 @@ and gradients. Measured with `profile_training.py`.
 ├── bench_models.py          the 5 re-implemented literature models
 ├── bench_run.py             benchmark harness (train + evaluate + compare)
 ├── bench_experiments.py     post-hoc analyses (ensembles, MC-dropout, error floor)
+├── bench_latency.py         inference latency + throughput benchmark (CUDA events)
+├── bench_latency_horizon.py latency vs number of horizons (non-autoregressive check)
+├── plot_pareto.py           accuracy-versus-latency Pareto figure
 ├── calibrate_uncertainty.py  conformal calibration of the multi-hypothesis ensemble
 ├── retrieval.py             retrieval engine (key, value, GPU top-k, leakage control)
 ├── run_retrieval.py         training of the retrieval-conditioned variant
 ├── retrieval_probe.py       decisive probe: does the retrieval prior carry signal?
 ├── retrieval_diagnostic.py  descriptor sweep + oracle ceiling of the retrieval
+├── legacy_flightprev.py     FlightPREV (previous model) re-implemented on OpenSky
+├── run_legacy.py            training/evaluation of the legacy model, same protocol
+├── make_benchmark_report.py unified 12-model table on the same test split
 ├── eval_ckpt.py             evaluate any checkpoint on any split
 ├── make_report.py           markdown/CSV report generator
 ├── profile_training.py      step-level A/B profiler
@@ -443,16 +491,24 @@ and gradients. Measured with `profile_training.py`.
 ├── config.json               run a 40 giorni (CPU, legacy)
 ├── config_90d.json           run a 90 giorni, orizzonte 5-600 s
 ├── config_90d_300s.json      run a 90 giorni, orizzonte 5-300 s (benchmark)
+├── config_90d_300s_hyp.json  the same + multi-hypothesis head (K=8)
 ├── config_180d.json          run a 180 giorni, orizzonte 5-180 s
 ├── config_40d_gpu.json       run di CONTROLLO a 40 giorni con identico budget GPU
 ├── config_90d_180s.json      CONTROLLO a 90 giorni con orizzonte 180 s
 ├── requirements.txt          environment verificato (numpy/matplotlib/triton pitfall)
 ├── docs/
+│   ├── PAPER.md              the technical report (paper-style, all the evidence)
 │   ├── ARCHITECTURE.md       formal specification of the model
 │   └── EXPERIMENTS.md        full experimental log (chronological, every run)
 ├── results*/                 metrics, CSVs and figures of every run
 └── checkpoints*/             trained weights
 ```
+
+> **Read first:** [`docs/PAPER.md`](docs/PAPER.md) is the self-contained technical report
+> (abstract, method, experiments, ablations, uncertainty calibration, inference latency,
+> limitations and the negative results). [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) specifies
+> the model formally, and [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) is the chronological lab
+> notebook.
 
 `data*/` (up to 10 GB per dataset) and `checkpoints*/` are **not** committed; the data is
 rebuilt from OpenSky in ~45 min for 90 days and ~110 min for 180 days.
