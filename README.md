@@ -277,7 +277,52 @@ is far better than its single draw (CFM: 983.5 m vs 1 704.3 m), i.e. the uncerta
   Per-horizon coverage at the 90 % level is 0,905 at 5 s and 0,901 at 300 s — the guarantee
   holds uniformly along the horizon, which is what a conflict-detection use case requires.
 
-### 4.3 Effect of the amount of data (identical recipe)
+### 4.3 Retrieval-conditioned model (medium-term intent prior)
+
+At 60–300 s the residual error is not sensor noise but **intent**: the aircraft's next manoeuvre
+is not observable from a 60 s window. The literature's largest recent gains come from exactly
+this prior (GooDFlight −48 % ADE with goal conditioning, RADiff retrieval-augmented, ATP local
+history of similar behaviours), so `AeroTrajUltraRetrieval` adds it to this model.
+
+**Mechanism.** Every observation is described by a 6-D key — position, flight level, heading,
+speed — and the `K` most similar past trajectories are retrieved from the training set. Their
+futures, expressed in the query's own local frame, form a *retrieval context* that the horizon
+queries attend to:
+
+```
+query_input = [ encoder_context ‖ horizon_embedding ‖ time_features ‖ retrieval_context ]
+```
+
+The retrieval block of `horizon_proj` starts at **zero** and the first three blocks are copied
+from the base checkpoint, so the model is *exactly* the base model at initialisation (verified:
+max deviation 0.0) and any improvement is attributable to the retrieval alone. At training time
+the candidates of the same flight are excluded from the retrieval, otherwise the model would
+learn to copy the future of a near-duplicate window of the same trajectory — impossible at
+inference, where the pool holds only past data.
+
+**Results** (90 days, 5–300 s, 342 572 candidate windows from 75 624 flights):
+
+| Variant | MDE | minADE@8 | 60 s | 120 s | 300 s | conformal radius @90 % |
+|---|---:|---:|---:|---:|---:|---:|
+| Base (deterministic) | 991,6 | — | 316,1 | 977,4 | 4 357,5 | — |
+| + multi-hypothesis (K=8) | 984,9 | 627,4 | 304,6 | 944,2 | 4 169,1 | 1 413 m |
+| + retrieval | 968,9 | — | 302,8 | 932,5 | 4 138,9 | — |
+| **+ both** | **957,2** | **608,2** | **297,7** | **918,5** | **4 092,5** | **1 190 m** |
+
+**Findings.**
+
+* The gain is **monotone in the horizon** (−0,3 % at 5 s → −5,0 % at 300 s for the retrieval
+  alone): the prior is irrelevant where physics dominates and decisive where intent is
+  uncertain — exactly the expected signature.
+* The effects of the two heads are **additive** (base → −0,7 % multi-hypothesis → −2,3 %
+  retrieval → −3,5 % combined), and the combined model is the best at every horizon.
+* The retrieval improves the **uncertainty** too: the oracle minADE@8 drops from 627,4 to
+  608,2 m, and the conformal band shrinks by a further 16 % (1 413 → 1 190 m at 90 % coverage).
+* The retrieval is **not** a free lunch: a first attempt, trained from scratch with an
+  unnormalised context, was **24 % worse** than the base model. The context must be scaled and
+  the projection warm-started, otherwise the retrieval signal swamps the other conditioning.
+
+### 4.4 Effect of the amount of data (identical recipe)
 
 | Dataset | Train days | Unique flights | MDE, 5 s → 180 s | MDE, 5 s → 600 s |
 |---|---:|---:|---:|---:|
@@ -292,7 +337,7 @@ Doubling the data from 40 to 90 days reduces the error by **17.2 % at the 600 s 
 1.8 % at 180 s**: the extra data buys accuracy where the trajectory is uncertain (long horizon,
 route divergence) and nothing where the error is dominated by sensor quantisation.
 
-### 4.4 Where the remaining error comes from
+### 4.5 Where the remaining error comes from
 
 Measured on the held-out set:
 
@@ -304,7 +349,7 @@ Measured on the held-out set:
   dominated by the unknown intent (turn left / right / continue), which is *epistemic* and is
   exactly what the generative models capture with their best-of-K spread.
 
-### 4.5 Training efficiency
+### 4.6 Training efficiency
 
 The model is **launch-bound**, not compute-bound (1.28 M parameters, 144-dim, ~600 kernel
 launches per forward). Three exact optimisations plus `torch.compile` give a **1.9×** speed-up:
@@ -331,6 +376,10 @@ and gradients. Measured with `profile_training.py`.
 ├── bench_run.py             benchmark harness (train + evaluate + compare)
 ├── bench_experiments.py     post-hoc analyses (ensembles, MC-dropout, error floor)
 ├── calibrate_uncertainty.py  conformal calibration of the multi-hypothesis ensemble
+├── retrieval.py             retrieval engine (key, value, GPU top-k, leakage control)
+├── run_retrieval.py         training of the retrieval-conditioned variant
+├── retrieval_probe.py       decisive probe: does the retrieval prior carry signal?
+├── retrieval_diagnostic.py  descriptor sweep + oracle ceiling of the retrieval
 ├── eval_ckpt.py             evaluate any checkpoint on any split
 ├── make_report.py           markdown/CSV report generator
 ├── profile_training.py      step-level A/B profiler

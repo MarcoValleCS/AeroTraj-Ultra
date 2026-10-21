@@ -461,6 +461,23 @@ class PhysicsKinematicPrior(nn.Module):
 # ==============================================================================
 # 5. AeroTraj-Ultra (FlightBERT++ V3) — Main Architecture
 # ==============================================================================
+def local_frame(x_obs: torch.Tensor):
+    """
+    Aircraft-centric local frame of the last observation.
+
+    Returns (lon0, lat0, alt0, heading, m_per_deg_lon), each [B,1], with
+    `heading` measured clockwise from North.  Used by the retrieval-conditioned
+    variant to express a neighbour's future in the query's own frame.
+    """
+    lon0 = x_obs[:, -1, 0:1]
+    lat0 = x_obs[:, -1, 1:2]
+    alt0 = x_obs[:, -1, 2:3]
+    heading = torch.atan2(x_obs[:, -1, 3:4], x_obs[:, -1, 4:5])
+    lat_rad = torch.deg2rad(lat0.clamp(-80.0, 80.0))
+    m_per_deg_lon = 111320.0 * torch.cos(lat_rad)
+    return lon0, lat0, alt0, heading, m_per_deg_lon
+
+
 class AeroTrajUltra(nn.Module):
     """
     AeroTraj-Ultra (FlightBERT++ V3):
@@ -533,7 +550,6 @@ class AeroTrajUltra(nn.Module):
             nn.GELU(),
             nn.Linear(self.n_embd, self.n_embd),
         )
-        self.horizon_proj = nn.Linear(self.n_embd * 3, self.n_embd)
         self.dec_pos_emb = SinusoidalPositionalEncoding(self.n_embd, self.dropout, max_len=128)
 
         # ---- multi-hypothesis head (optional) --------------------------- #
@@ -543,6 +559,20 @@ class AeroTrajUltra(nn.Module):
         # single-hypothesis model; each mode then acts as a per-mode bias on
         # the horizon features, and a shared head turns it into one full
         # kinematic hypothesis (residual on the physics prior).
+        # ---- optional retrieval conditioning (intent prior) ------------- #
+        # When enabled, the horizon queries receive a fourth block: the
+        # attention-pooled context of the K most similar past trajectories.
+        # `horizon_proj` then takes 4*D inputs instead of 3*D, so a base
+        # checkpoint can still be warm-started (see `load_base_weights`).
+        self.use_retrieval = bool(m_cfg.get("use_retrieval", False))
+        self.n_neighbours = int(m_cfg.get("n_neighbours", 8))
+        if self.use_retrieval:
+            self.retr_proj = nn.Linear(int(m_cfg.get("retrieval_dim", 4)), self.n_embd)
+            self.retr_attn = nn.Linear(self.n_embd, 1)
+            self.horizon_proj = nn.Linear(self.n_embd * 4, self.n_embd)
+        else:
+            self.horizon_proj = nn.Linear(self.n_embd * 3, self.n_embd)
+
         self.n_modes = int(m_cfg.get("n_modes", 0))
         if self.n_modes > 0:
             self.mode_queries = nn.Parameter(
@@ -612,10 +642,14 @@ class AeroTrajUltra(nn.Module):
         )
 
     def forward(
-        self, x_obs: torch.Tensor
+        self,
+        x_obs: torch.Tensor,
+        retr_ctx: Optional[torch.Tensor] = None,
+        return_scores: bool = False,
     ) -> Dict[str, torch.Tensor | Tuple[torch.Tensor, ...]]:
         """
         x_obs: [B, T_in, 9] -> [lon, lat, alt_10m, vx_kmh, vy_kmh, vz_ms, u_wind, v_wind, temp_k]
+        retr_ctx (optional): [B, K, H, 4] retrieval context (intent prior).
         Returns dict with:
           - 'pred': [B, H, 6] final fused trajectory prediction
           - 'pred_kin': [B, H, 6] analytical physics prior
@@ -665,7 +699,17 @@ class AeroTrajUltra(nn.Module):
         t_emb = self.time_mlp(time_feats)  # [B, H, D]
 
         ctx_rep = context_vec.unsqueeze(1).expand(-1, self.horizon, -1)  # [B, H, D]
-        horizon_queries = self.horizon_proj(torch.cat([ctx_rep, h_emb, t_emb], dim=-1))  # [B, H, D]
+        if self.use_retrieval:
+            if retr_ctx is not None:
+                retr_enc = self.encode_retrieval(retr_ctx)                # [B, H, D]
+            else:
+                retr_enc = torch.zeros(B, self.horizon, self.n_embd,
+                                       device=device, dtype=x_obs.dtype)
+            horizon_queries = self.horizon_proj(
+                torch.cat([ctx_rep, h_emb, t_emb, retr_enc], dim=-1)
+            )
+        else:
+            horizon_queries = self.horizon_proj(torch.cat([ctx_rep, h_emb, t_emb], dim=-1))
 
         dec_full_in = self.dec_pos_emb(torch.cat([dec_prefix_emb, horizon_queries], dim=1))
         hyp_pred = None
@@ -747,6 +791,65 @@ class AeroTrajUltra(nn.Module):
             out["hyp_pred"] = hyp_pred
             out["hyp_score"] = hyp_score
         return out
+
+
+class AeroTrajUltraRetrieval(AeroTrajUltra):
+    """
+    Retrieval-conditioned variant of AeroTraj-Ultra, for medium-term intent.
+
+    The behaviour is entirely defined by the base class: setting
+    `model.use_retrieval = True` (i.e. `model_cfg.use_retrieval` in the config)
+    makes the horizon queries accept a fourth conditioning block, the
+    attention-pooled context of the K past trajectories most similar to the
+    current observation (same neighbourhood, heading, flight level and speed),
+    with their futures expressed in the query's local frame.
+
+    The attention is what makes it work: AVERAGING the neighbours (the naive
+    predictor) is much worse than constant velocity because they often lie on
+    different routes, whereas a learned selection can pick the subset that is
+    actually consistent with the current state.
+
+    `load_base_weights` warm-starts it from a base checkpoint: the first three
+    blocks of `horizon_proj` keep the base weights and the retrieval block
+    starts at zero, so the model is exactly the base model at initialisation
+    and any improvement is attributable to the retrieval context alone.
+    """
+
+    def __init__(self, cfg: Dict, norm_mean: np.ndarray, norm_std: np.ndarray,
+                 n_neighbours: int = 8, retrieval_dim: int = 4) -> None:
+        m_cfg = dict(cfg["model"])
+        m_cfg["use_retrieval"] = True
+        m_cfg["n_neighbours"] = n_neighbours
+        m_cfg["retrieval_dim"] = retrieval_dim
+        cfg = dict(cfg)
+        cfg["model"] = m_cfg
+        super().__init__(cfg, norm_mean, norm_std)
+
+    def encode_retrieval(self, retr_ctx: torch.Tensor) -> torch.Tensor:
+        """
+        retr_ctx : [B, K, H, C] -> [B, H, D] attention-pooled context.
+        """
+        nb = self.retr_proj(retr_ctx)                       # [B,K,H,D]
+        w = torch.softmax(self.retr_attn(nb), dim=1)         # [B,K,H,1]
+        return (w * nb).sum(dim=1)                           # [B,H,D]
+
+    @torch.no_grad()
+    def load_base_weights(self, state_dict: Dict[str, torch.Tensor]):
+        """
+        Warm start from a base `AeroTrajUltra` checkpoint (see the class
+        docstring).  Returns (missing, unexpected).
+        """
+        new = dict(state_dict)
+        w = new.get("horizon_proj.weight")
+        b = new.get("horizon_proj.bias")
+        if w is not None:
+            d = self.n_embd
+            new_w = torch.zeros(self.horizon_proj.weight.shape, device=w.device, dtype=w.dtype)
+            new_w[:, : 3 * d] = w[:, : 3 * d]
+            new["horizon_proj.weight"] = new_w
+            if b is not None:
+                new["horizon_proj.bias"] = b.clone()
+        return self.load_state_dict(new, strict=False)
 
 
 # ==============================================================================

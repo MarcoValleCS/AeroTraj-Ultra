@@ -362,7 +362,65 @@ quantile-calibrated per stratum (climb / cruise / descent) at level `1−α`. Se
 
 ---
 
-## 10. Training objective
+## 10. Retrieval-conditioned variant (medium-term intent prior)
+
+At 60–300 s the residual error is not sensor noise but **intent**: the manoeuvre the aircraft
+will fly is not observable from a 60 s window. `AeroTrajUltraRetrieval` adds a non-parametric
+prior over past trajectories.
+
+**Retrieval key.** Every observation is described by a 6-D descriptor
+
+$$ d=\big[\ \lambda,\ \varphi,\ h/500,\ \sin\psi,\ \cos\psi,\ |v|/50\ \big] $$
+
+(position, flight level, heading, speed). The absolute position can be down-weighted
+(`pos_weight`): the diagnostic sweep showed that dividing it by 10 — turning the key from a
+*route identity* into a *neighbourhood prior* — raises the oracle from 981 m to 900 m.
+
+**Retrieved value.** For every candidate the future is stored in the candidate's **own** local
+frame (forward, right, up in metres) together with its ground speed and heading.
+
+**Query.** The `K` nearest candidates are found on the GPU with the
+`|q|² − 2qc + |c|²` expansion, their frames are **rotated into the query's heading frame**
+(so the context is directly comparable with the query's own kinematics) and scaled
+(positions ÷1000, speed ÷100) to keep the conditioning O(1).
+
+**Conditioning.** The context is encoded per neighbour (`Linear_{4→D}`) and pooled over the
+neighbours with a learned attention; the result is appended to the horizon-query input:
+
+$$ q_h=\mathrm{Linear}_{4D\to D}\big[\,c\ \Vert\ e_h\ \Vert\ \phi(t_h)\ \Vert\ \rho_h\,\big] $$
+
+where `ρ_h` is the retrieval context. The `tanh`-free, purely additive nature of the block
+means the deterministic path is otherwise untouched.
+
+**Warm start.** `load_base_weights` copies a base checkpoint verbatim except `horizon_proj`,
+whose input grew from `3D` to `4D`: the first three blocks keep the base weights and the
+retrieval block starts at zero. The model is therefore **exactly** the base model at
+initialisation (verified: max deviation 0.0 on random inputs with a random context), and any
+improvement is attributable to the retrieval context alone.
+
+**Leakage control.** At training time the candidates belonging to the *same flight* as the query
+are excluded from the retrieval. Without this the model learns to copy the future of a
+near-duplicate window of the same trajectory, which is impossible at inference (the pool holds
+only past data). The exclusion is vectorised through a CSR-style flight index.
+
+**Measured effect** (90 days, 5–300 s, 342 572 candidate windows from 75 624 flights):
+
+| Variant | MDE | minADE@8 | 60 s | 120 s | 300 s |
+|---|---:|---:|---:|---:|---:|
+| base | 991,6 | — | 316,1 | 977,4 | 4 357,5 |
+| + multi-hypothesis | 984,9 | 627,4 | 304,6 | 944,2 | 4 169,1 |
+| + retrieval | 968,9 | — | 302,8 | 932,5 | 4 138,9 |
+| **+ both** | **957,2** | **608,2** | **297,7** | **918,5** | **4 092,5** |
+
+The gain is monotone in the horizon (−0,3 % at 5 s, −5,0 % at 300 s): a prior on intent is
+irrelevant where physics dominates and decisive where the manoeuvre is unknown.
+
+**Cost**: +66 536 parameters (+5,2 %) and +15 s/epoch (the retrieval is a GPU top-k over
+342 572 candidates).
+
+---
+
+## 11. Training objective
 
 $$
 \mathcal L=\underbrace{2.5}_{\text{pos}}\mathcal L_{\text{pos}}
@@ -392,7 +450,7 @@ with
 
 ---
 
-## 11. Parameter budget
+## 12. Parameter budget
 
 | module | parameters | share |
 |---|---:|---:|
@@ -418,7 +476,7 @@ interpretable reference and as a residual anchor.
 
 ---
 
-## 12. Hyper-parameters
+## 13. Hyper-parameters
 
 | group | value |
 |---|---|
@@ -435,7 +493,7 @@ interpretable reference and as a residual anchor.
 
 ---
 
-## 13. Complexity
+## 14. Complexity
 
 The model is **launch-bound** rather than compute-bound. Per forward pass: ≈ 600 CUDA kernels,
 ≈ 0.1 GFLOP at batch 2 048. The Gray-Code decoder alone accounted for ≈ 330 launches before

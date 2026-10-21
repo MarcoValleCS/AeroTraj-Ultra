@@ -926,6 +926,57 @@ sfruttabile per il conflict detection, dove serve una garanzia formale e non un 
 garanzia è marginale (valida under exchangeability) e nonULA distribuzionalmente spostata; in
 un deployment reale il calibration set deve essere raccolto su un periodo rappresentativo.
 
+### 6.6 Modello condizionato dal retrieval (prior d'intenzione)
+
+Implementazione: `retrieval.py` (motore) · `AeroTrajUltraRetrieval` in `model.py` · training in
+`run_retrieval.py` · diagnostica in `retrieval_probe.py` e `retrieval_diagnostic.py`.
+
+**Domanda di partenza** (misurata prima di investire): nella banda 60–300 s l'errore residuo
+non è rumore ma *intenzione*. Il soffitto del retrieval (orakle best-of-8 fra i vicini recuperati)
+è stato calcolato per quattro descrittori:
+
+| Descrittore | Orakle (media su 13 orizzonti) | CV | Modello |
+|---|---:|---:|---:|
+| pos_state (posizione piena) | 981 m | 1 543 | 993 |
+| **pos_light (posizione ÷10)** | **900 m** | 1 543 | 993 |
+| pos_heavy (altitudine ÷200) | 1 018 m | 1 543 | 993 |
+| state_only (solo cinematica) | 951 m | 1 543 | 993 |
+
+A 300 s l'orakle del descriptor migliore fa 3 303 m contro i 4 261 m del modello (**−22,5 %**):
+il segnale c'è ed è proprio nella banda medio-termine. La **media** dei vicini, invece, è
+pessima (1 859 m, peggio del CV): i vicini stanno spesso su rotte diverse e la loro media non è
+una traiettoria plausibile (mode averaging). È il motivo per cui serve un modello che
+**selezioni** (attenzione) invece di mediare.
+
+**Risultati finali** (90 giorni, 5–300 s, K=8, pool 342 572 finestre da 75 624 voli):
+
+| Variante | MDE | minADE@8 | 60 s | 120 s | 300 s | Raggio conformal 90 % |
+|---|---:|---:|---:|---:|---:|---:|
+| Base (deterministico) | 991,6 | — | 316,1 | 977,4 | 4 357,5 | — |
+| + multi-iperspettrale | 984,9 | 627,4 | 304,6 | 944,2 | 4 169,1 | 1 413 m |
+| + retrieval | 968,9 | — | 302,8 | 932,5 | 4 138,9 | — |
+| **+ entrambi** | **957,2** | **608,2** | **297,7** | **918,5** | **4 092,5** | **1 190 m** |
+
+**Letture**
+
+1. **Il guadagno è monotono nell'orizzonte** (retrieval: −0,3 % a 5 s → −5,0 % a 300 s): è la
+   firma meccanistica di una prior d'intenzione — irrilevante dove domina la fisica, decisiva
+   dove domina l'incertezza sul comportamento.
+2. **Gli effetti delle due teste sono additivi** e il modello combinato è il migliore a ogni
+   orizzonte.
+3. Il retrieval migliora anche **l'incertezza**: oracolo minADE@8 627,4 → 608,2 m e banda
+   conformal 1 413 → 1 190 m (−16 %).
+4. **Il retrieval non è gratis**: il primo tentativo, addestrato da zero con contesto non
+   normalizzato, era **24 % peggiore** del modello base (1 227 m). Servono (i) contesto scalato
+   (posizioni ÷1000, velocità ÷100) e (ii) warm start dal checkpoint base, altrimenti il
+   segnale del retrieval domina il conditioning di embedding e tempo e la convergenza peggiora.
+5. **La selezione(score) resta non calibrata** (1 060,3 m, peggio del deterministico 957,2 m):
+   il guadagno orakle del retrieval non è ancora sfruttabile a livello di singola previsione.
+
+**Costo**: +66 536 parametri (1 343 375, +5,2 %) · +15 s/epoca (44 s vs 29 s) · pool 342 572
+candidati (~150 MB in VRAM) · il mascheramento "same flight" è vettorizzato (un loop Python
+costava 49 s/epoca per le sincronizzazioni GPU).
+
 ---
 
 ## 7. Funzionalità e limiti noti
