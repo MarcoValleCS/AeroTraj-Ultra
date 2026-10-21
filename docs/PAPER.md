@@ -533,24 +533,56 @@ alone is competitive, which is the central architectural claim. The MAF gate add
 
 ### 6.3 Effect of the amount of data (identical recipe)
 
+**The 365-day run (the headline result of the data study).** Same architecture, same
+5 s → 300 s grid, same recipe, trained on **365 consecutive days** (293/36/36):
+**438 215 unique flights** and 306.8 M 5-second points, i.e. **4.5× the flights** and 4.7×
+the points of the 90-day dataset. 150 epochs with `torch.compile`, 15.8 s/epoch (**42 min**
+total), best checkpoint at epoch 146 (val MDE 952.3 m), early stopping armed but never
+triggered.
+
+Because the two runs have different test splits, each checkpoint was evaluated on **both**
+splits, 60,000 windows each (`eval_cross.py`):
+
+| test split | 90-day model | **365-day model** | Δ |
+|---|---:|---:|---:|
+| March 2022 (2022-03-23 → 03-31) | 991.6 m | **847.3 m** | **−14.55 %** |
+| Nov–Dec 2022 (2022-11-26 → 12-31) | 1,082.8 m | **926.0 m** | **−14.48 %** |
+
+Per-horizon, on the Nov–Dec split (the 5 s → 300 s profile of the same comparison):
+
+| | 5 s | 30 s | 60 s | 120 s | 180 s | 300 s |
+|---|---:|---:|---:|---:|---:|---:|
+| 90-day model | 59.7 | 124.1 | 328.8 | 1,043.7 | 2,041.3 | 4,640.2 |
+| **365-day model** | **56.8** | **111.3** | **290.9** | **903.6** | **1,741.1** | **3,930.6** |
+| Δ | −4.9 % | −10.3 % | −11.6 % | −13.4 % | −14.7 % | −15.3 % |
+
+**Findings.**
+
+1. The gain is **−14.5 %, measured independently on two different test periods** and
+   agreeing to within 0.07 percentage points: it is the data, not a test-set artefact.
+2. It is **monotone in the horizon** (−5.3 % at 5 s → −15.8 % at 300 s on the March split,
+   −4.9 % → −15.3 % on the Nov–Dec split). More data helps exactly where the residual error
+   is *intent* rather than sensor noise — the same signature as the retrieval prior (§6.4).
+3. It is **~8× larger than the 90 → 180-day gain** (−1.8 % over 5–180 s), so the return on
+   data compounds once the trajectory neighbourhood is dense, which is consistent with a
+   retrieval-like mechanism rather than with plain regularisation.
+4. **Temporal drift, measured while doing the above.** The *same* model is 7.0 % worse at
+   60 s and 10.0 % worse at 300 s on Nov–Dec than on March, but 1.9 % *better* at 5 s: the
+   winter period is genuinely harder where intent matters. A single test split therefore
+   under- or over-states a model depending on its season, and cross-split evaluation should
+   be the default rather than an extra.
+
+**Earlier data-scaling runs** (identical recipe, 5 s → 180 s grid):
+
 | Trained on | Unique flights | 5 s | 30 s | 60 s | 180 s | **Mean MDE (5–180 s)** |
 |---|---:|---:|---:|---:|---:|---:|
 | 90 days (72 train) | 76,939 | 69.4 | 129.6 | 318.5 | 1,986.5 | 539.3 m |
 | **180 days (144 train)** | **164,410** | 69.5 | 129.2 | 315.2 | 1,939.6 | **529.4 m** |
 | Δ | +2.2× | +0.1 % | −0.3 % | −1.0 % | −2.4 % | **−1.8 %** |
 
-Doubling the data changes the mean by **−1.8 %**, and the improvement grows with the
-horizon (−2.4 % at 180 s) while the short horizons are flat. This is the dataset-size
-counterpart of the error-floor analysis in §6.6: adding data cannot help where the
-information is not in the input, and only marginally helps where a denser neighbourhood
-improves the implicit route prior. On the same test set, FlightBERT++ V2 scores 818.8 m
-(−35.4 % vs ours), CV-Doppler 886.1 m (−40.3 %), CV-LSQ 1,076.9 m, physics prior 857.5 m.
-
-The **180-day** run (5–180 s grid) reaches **527.6 m** mean, against 820.2 m for
-FlightBERT++ V2 (−35.7 %) and 885.1 m for CV-Doppler (−40.4 %); the best single gain
-is −44.8 % at 30 s, and at 180 s the difference is 1,929.5 m vs 2,846.1 m (−0.92 km).
-It is also the run where early stopping was armed but never triggered: the validation loss
-was still decreasing at epoch 80.
+On the same test set, FlightBERT++ V2 scores 818.8 m (−35.4 % vs ours), CV-Doppler 886.1 m
+(−40.3 %), CV-LSQ 1,076.9 m, physics prior 857.5 m. The 180-day run's best single gain is
+−44.8 % at 30 s, and at 180 s the difference is 1,929.5 m vs 2,846.1 m (−0.92 km).
 
 ### 6.4 The two compositional heads
 
@@ -727,10 +759,12 @@ aircraft (**15,200 aircraft/s**), i.e. a 5,000-aircraft European snapshot in **~
 **Reading.** The base model is **flat up to batch ~512** (≈ 20 ms for the whole batch — the
 launch overhead is amortised, not the compute) and only then does arithmetic start to
 dominate. The retrieval variant, by contrast, **stops scaling after batch ~512**: its top-k
-is an `O(B × M)` scan over M = 342,572 candidates, and at batch 512 it already costs as much
-as the whole forward pass (20.8 ms vs 23.5 ms). At fleet scale the exact top-k must be
-replaced by an indexed or approximate search — a concrete, measured limitation of the
-retrieval module (§9.3), not a hypothetical one.
+is an `O(B × M)` scan over M = 342,572 candidates and at batch 512 it already costs
+**16.3 ms against a 6.7 ms forward pass** (70 % of the pipeline). Its per-aircraft cost
+therefore saturates at ~17,200 aircraft/s instead of 55,000, and at fleet scale the exact
+top-k must be replaced by an indexed or approximate search — a concrete, measured limitation
+of the retrieval module (§9.3), not a hypothetical one. §8.6 shows how far this can be pushed
+with the layout alone, and §9.2 records what had to be rejected.
 
 ### 8.4 Latency is flat in the prediction horizon
 
@@ -785,14 +819,21 @@ is never traded for accuracy.
 
 | variant (batch 1, end-to-end, incl. H2D) | latency | speed-up | MDE | ΔMDE |
 |---|---:|---:|---:|---:|
-| eager + `torch.no_grad()` (the §8.1 baseline) | 19.59 ms | — | 1000.24 m | — |
-| eager + `torch.inference_mode()` | **15.7–18.3 ms** | **1.20×** | 1000.24 m | **0.000 %** |
-| `torch.compile(reduce-overhead)` | **4.1–5.5 ms** | **4.4–6.1×** | 1000.25 m | +0.0014 % |
+| eager + `torch.no_grad()` (the §8.1 baseline) | 19.3–20.7 ms | — | 1000.24 m | — |
+| eager + `torch.inference_mode()` | **17.2–19.6 ms** | **1.05–1.20×** | 1000.24 m | **0.000 %** |
+| **`torch.compile(reduce-overhead)`** | **2.8–6.5 ms** | **3.0–7.4×** | 1000.25 m | +0.0014 % |
 
-| throughput (aircraft/s) | batch 1 | batch 128 | batch 512 | batch 4096 |
-|---|---:|---:|---:|---:|
-| eager | 55 | 5,964 | 27,662 | 56,986 |
-| **compiled** | **181** | **16,907** | **70,744** | **69,760** |
+Both ranges are over repeated independent runs: the compiled path is the noisiest because
+inductor specialises on the input shape, so the exact kernel selection depends on the
+autotune result and on how the replay graph is captured. The conservative statement is
+**≥3×**, the typical one **~5–6×**.
+
+| throughput (aircraft/s) | batch 1 | batch 128 | batch 512 | batch 2048 | batch 4096 |
+|---|---:|---:|---:|---:|---:|
+| deterministic, eager | 56 | 6,483 | 27,528 | 51,817 | 56,220 |
+| **deterministic, compiled** | **155–178** | **24,104** | **28,336–75,296** | **62,730–73,206** | **67,605–73,345** |
+| + retrieval, eager | 31 | 3,880 | 12,370 | 17,461 | 17,231 |
+| **+ retrieval, compiled** | **109** | **10,151** | **22,111** | **20,016** | **20,968** |
 
 **1. `torch.inference_mode()` instead of `no_grad()` — 20 % for free.** `no_grad` still
 maintains autograd's version counters on every tensor; `inference_mode` removes them. The
@@ -821,17 +862,36 @@ reassociation reaches it. Because the metric, the per-horizon profile and theref
 conformal band are unchanged, compilation is enabled by default in the inference path.
 
 **4. The retrieval search, not the network, is the remaining bottleneck.** At batch 512 the
-compiled forward pass costs **6.6 ms** while the retrieval `top-k` over 342,572 candidates
-costs **~20 ms** — three times the model. The cause is again launch overhead plus the
-distance-matrix traffic, not FLOPs (the whole distance computation is 17 GFLOP at batch
-4096, i.e. <1 ms of pure compute on an RTX 4070). Three levers were measured:
+compiled forward pass costs **6.7 ms** while the retrieval `top-k` over 342,572 candidates
+costs **16.3 ms** — 2.4× the model, and 70 % of the 23.2 ms full pipeline. The cause is again
+launch overhead plus the distance-matrix traffic, not FLOPs (the whole distance computation
+is 17 GFLOP at batch 4096, i.e. <1 ms of pure compute on an RTX 4070). Two blocking
+dimensions exist, and **they interact**: the number of kernel launches is
+≈ (B / block) × (M / cand_block), so shrinking one while the other is small explodes the
+launch count. Measured (`bench_retrieval_grid.py`; every configuration returns the same
+neighbours up to floor-level ties):
+
+| configuration | B = 512 | B = 4096 | peak MiB | neighbours vs default |
+|---|---:|---:|---:|---:|
+| block 256, cand_block None | 21.0 ms | 167.2 ms | 1,081 | 9 / 74 differ (tie-break) |
+| block 16, cand_block None | 17.1 ms | 133.6 ms | 140 | 9 / 74 differ (tie-break) |
+| **block 512, cand_block 16 384** | **16.5 ms** | **130.3 ms** | **178** | reference |
+| block 256, cand_block 16 384 | 17.7 ms | 144.9 ms | 125 | identical |
+| block 256, cand_block 4 096 | 80.2 ms | 585.7 ms | 94 | 4 / 60 differ |
+| block 64, cand_block 16 384 | 80.7 ms | 608.7 ms | 95 | identical |
+| block 16, cand_block 16 384 | **240.0 ms** | **1,622.5 ms** | 80 | identical |
+
+The adopted default is `block = 512` **together with** `cand_block = 16 384`: the fastest
+configuration measured, with a 178 MiB peak instead of 1,081 MiB. Note the bottom row: the
+naive pairing of the two individually-attractive settings is a **13× regression**, and the
+blocking dimension alone is not free — the launch count is what the model is bound by.
+
+Two further levers were measured and **rejected**:
 
 | lever | effect | neighbours | verdict |
 |---|---|---|---|
-| `block=16` instead of 256 (queries per chunk) | **−12 %** at batch 4096 | **identical** | **adopted** (new default) |
-| candidate-blocked top-k (`cand_block=16k`) | ≈ −12 %, and −20× peak memory (351 MB → 17 MB) | identical | **adopted** |
-| fp16 distances | −30 % | **differ on 99.9 % of queries** | **rejected** (§9.2) |
-| pool with one candidate per flight (342,572 → 75,624) | **−82 %** of candidates, **5.5×** faster search | different pool ⇒ MDE **+0.127 %** | **opt-in only** |
+| fp16 distances | −30 % | **differ on 99.9 % of queries** | rejected (§9.2) |
+| pool with one candidate per flight (342,572 → 75,624) | **−82 %** of candidates, **5.5×** faster search | different pool ⇒ MDE **+0.127 %** | opt-in only |
 
 The pruned pool is the only lever that removes the *traffic* rather than rearranging it,
 and its cost is real: +1.21 m of MDE (949.29 → 950.50 m on 12,288 windows), concentrated at
@@ -839,7 +899,15 @@ the long horizons (+8.9 m at 300 s). It is therefore exposed as
 `build_pool(..., one_per_flight=True)` and is **not** the default: the default keeps the
 quality, and deployments that are throughput-bound can trade 0.13 % of accuracy for 5.5×.
 
-**5. Rejected: a hand-captured CUDA graph.** Capturing the forward pass with
+**5. The retrieval path is intrinsically jittery.** It issues hundreds of tiny kernels, so
+its latency tracks host CPU load in a way the model forward does not: measured *on the same
+machine*, the search at batch 512 ranged from 17 ms (idle) to 228 ms (while the CPU was
+saturated by the dataset build and the OS was flushing 10 GB of arrays to disk), a factor
+13. The base model measured in the same two conditions moved by less than 5 %. For a
+deployment, this means the *retrieval* is the component that must be provisioned for the
+worst case, or replaced by an indexed search (§9.3).
+
+**6. Rejected: a hand-captured CUDA graph.** Capturing the forward pass with
 `torch.cuda.CUDAGraph` is the textbook way to remove launch overhead, and it fails on this
 stack in a way worth recording: after the capture the CUDA caching allocator reports
 `Offset increment outside graph capture encountered unexpectedly` and **every subsequent

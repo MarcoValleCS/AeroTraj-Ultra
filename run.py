@@ -32,6 +32,7 @@ from model import (
     HybridPhysicsConstrainedLoss,
     LSTMRegressionBaseline,
     SmoothedConstantVelocityBaseline,
+    normalize_state_dict,
 )
 
 
@@ -398,7 +399,7 @@ def train_and_evaluate_all(
             )
             ckpt_prev = None
         if ckpt_prev is not None:
-            model.load_state_dict(ckpt_prev["model_state_dict"])
+            model.load_state_dict(normalize_state_dict(ckpt_prev["model_state_dict"]))
             best_val_mde = float(ckpt_prev.get("val_mde_3d_m", float("inf")))
             start_epoch = int(ckpt_prev.get("epoch", 8)) + 1
             print(
@@ -490,7 +491,10 @@ def train_and_evaluate_all(
             torch.save(
                 {
                     "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
+                    # unwrap torch.compile's OptimizedModule: its state_dict keys
+                    # are prefixed with "_orig_mod." and the checkpoint would be
+                    # unloadable by anything that builds the plain model
+                    "model_state_dict": getattr(model, "_orig_mod", model).state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "val_mde_3d_m": best_val_mde,
                     "config": cfg,
@@ -520,7 +524,7 @@ def train_and_evaluate_all(
 
     # Reload best checkpoint
     ckpt = torch.load(best_ckpt_path, map_location=device, weights_only=False)
-    model.load_state_dict(ckpt["model_state_dict"])
+    model.load_state_dict(normalize_state_dict(ckpt["model_state_dict"]))
     torch.save(ckpt, final_ckpt_path)
     print(f"\n[AeroTraj-Ultra] Loaded best checkpoint from Epoch {ckpt['epoch']} (Val MDE: {best_val_mde:.1f}m)")
     if stopped_early:

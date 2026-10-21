@@ -1,0 +1,93 @@
+{
+  "n_candidates": 342572,
+  "results": {
+    "512": {
+      "block256_cand16384": {
+        "gpu_ms": 17.73915195465088,
+        "us_per_query": 34.6467811614275,
+        "peak_mib": 125.037109375,
+        "n_queries_with_diff": 0
+      },
+      "block256_candNone": {
+        "gpu_ms": 21.017152786254883,
+        "us_per_query": 41.04912653565407,
+        "peak_mib": 1080.626953125,
+        "n_queries_with_diff": 9
+      },
+      "block16_candNone": {
+        "gpu_ms": 17.10335922241211,
+        "us_per_query": 33.40499848127365,
+        "peak_mib": 139.734375,
+        "n_queries_with_diff": 9
+      },
+      "block16_cand16384": {
+        "gpu_ms": 239.96160125732422,
+        "us_per_query": 468.67500245571136,
+        "peak_mib": 80.01220703125,
+        "n_queries_with_diff": 0
+      },
+      "block64_cand16384": {
+        "gpu_ms": 80.7081413269043,
+        "us_per_query": 157.63308852910995,
+        "peak_mib": 89.26611328125,
+        "n_queries_with_diff": 0
+      },
+      "block512_cand16384": {
+        "gpu_ms": 16.45516872406006,
+        "us_per_query": 32.1390014141798,
+        "peak_mib": 173.2255859375,
+        "n_queries_with_diff": 0
+      },
+      "block256_cand4096": {
+        "gpu_ms": 80.15862274169922,
+        "us_per_query": 156.5598100423813,
+        "peak_mib": 89.115234375,
+        "n_queries_with_diff": 4
+      }
+    },
+    "4096": {
+      "block256_cand16384": {
+        "gpu_ms": 144.92179107666016,
+        "us_per_query": 35.38129664957523,
+        "peak_mib": 129.02197265625,
+        "n_queries_with_diff": 0
+      },
+      "block256_candNone": {
+        "gpu_ms": 167.22534942626953,
+        "us_per_query": 40.826501324772835,
+        "peak_mib": 1084.89306640625,
+        "n_queries_with_diff": 74
+      },
+      "block16_candNone": {
+        "gpu_ms": 133.5854034423828,
+        "us_per_query": 32.61362388730049,
+        "peak_mib": 144.21923828125,
+        "n_queries_with_diff": 74
+      },
+      "block16_cand16384": {
+        "gpu_ms": 1622.470458984375,
+        "us_per_query": 396.1109519004822,
+        "peak_mib": 84.4970703125,
+        "n_queries_with_diff": 0
+      },
+      "block64_cand16384": {
+        "gpu_ms": 608.725341796875,
+        "us_per_query": 148.61458539962769,
+        "peak_mib": 94.4619140625,
+        "n_queries_with_diff": 0
+      },
+      "block512_cand16384": {
+        "gpu_ms": 130.32857513427734,
+        "us_per_query": 31.81849978864193,
+        "peak_mib": 177.71044921875,
+        "n_queries_with_diff": 0
+      },
+      "block256_cand4096": {
+        "gpu_ms": 585.6836547851562,
+        "us_per_query": 142.9891735315323,
+        "peak_mib": 93.94677734375,
+        "n_queries_with_diff": 60
+      }
+    }
+  }
+}

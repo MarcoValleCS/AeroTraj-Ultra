@@ -128,17 +128,22 @@ class RetrievalIndex:
         self.w = descriptor_weights(device)
 
     # -- search -------------------------------------------------------- #
-    def search(self, q_desc: torch.Tensor, k: int = 8, block: int = 16,
+    def search(self, q_desc: torch.Tensor, k: int = 8, block: int = 512,
                exclude_self: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         q_desc [B,6] -> (idx [B,k], dist [B,k]) of the k nearest candidates.
 
         `block` is the number of queries per chunk.  It is a pure memory-layout
-        parameter: the returned neighbours are identical for every value (checked
-        in bench_retrieval_block.py), but the cost is not.  At batch 4096 a chunk
-        of 16 is 12 % faster than 256, because the [block, M] distance matrix
-        written per chunk stops evicting the candidate matrix from the L2 cache;
-        below 16 the kernel-launch overhead takes over.
+        parameter (the neighbours are the same up to floor-level ties), but the
+        two blocking dimensions INTERACT: the cost is ~
+        (B/block) * (M/cand_block) launches, so shrinking `block` only helps when
+        the candidate dimension is NOT blocked.  Measured at batch 512 / 4096
+        (bench_retrieval_grid.py):
+
+            block=512, cand_block=16384  16.5 / 130.3 ms   <- default
+            block=256, cand_block=16384  17.7 / 144.9 ms
+            block=16,  cand_block=None   17.1 / 133.6 ms
+            block=16,  cand_block=16384  240  / 1623  ms   <- 13x regression
         """
         q = q_desc * self.w
         cq = self.cand_desc * self.w
@@ -254,7 +259,7 @@ class RetrievalPool:
             flat = flat[inside] - offset
         d2.view(-1).scatter_(0, flat, float("inf"))
 
-    def search(self, q_desc: torch.Tensor, k: int = 8, block: int = 16,
+    def search(self, q_desc: torch.Tensor, k: int = 8, block: int = 512,
                q_flight: Optional[torch.Tensor] = None,
                cand_block: Optional[int] = 16384) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -264,9 +269,14 @@ class RetrievalPool:
         The distances are computed in candidate slices of `cand_block` with a
         running top-k.  Materialising the whole [block, M] matrix costs
         256 x 342 572 x 4 B = 351 MB per query block (5.6 GB of DRAM traffic at
-        B = 4096); the sliced version keeps the working set inside the L2 cache
-        (256 x 16 384 x 4 B = 17 MB).  The returned k nearest neighbours are the
-        same; `cand_block=None` restores the single-shot behaviour.
+        B = 4096); the sliced version keeps the working set at
+        block x cand_block x 4 B = 16 MB.  The returned k nearest neighbours are
+        the same; `cand_block=None` restores the single-shot behaviour.
+
+        `block` and `cand_block` MUST be chosen together: the number of kernel
+        launches is ~(B/block) * (M/cand_block), so a small `block` combined with
+        a small `cand_block` explodes the launch count.  Measured at batch 512:
+        (256, 16384) 17.4 ms, (16, None) 17.1 ms, (16, 16384) 228 ms.
         """
         B = q_desc.shape[0]
         out_idx = torch.empty((B, k), dtype=torch.long, device=self.device)

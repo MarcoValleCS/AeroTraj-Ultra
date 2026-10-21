@@ -461,6 +461,23 @@ class PhysicsKinematicPrior(nn.Module):
 # ==============================================================================
 # 5. AeroTraj-Ultra (FlightBERT++ V3) — Main Architecture
 # ==============================================================================
+def normalize_state_dict(sd):
+    """
+    Return a state dict whose keys can be loaded into an UNCOMPILED model.
+
+    Saving a `torch.compile`-wrapped module prefixes every key with `_orig_mod.`
+    (the wrapper is an OptimizedModule holding the original one).  A checkpoint
+    produced by a compiled training run is therefore unloadable by anything that
+    builds the plain model, which is exactly what happened to
+    checkpoints_365/aerotraj_ultra_best.pt.  Stripping the prefix is safe: the
+    wrapper does not add parameters of its own.
+    """
+    if not any(k.startswith("_orig_mod.") for k in sd):
+        return sd
+    return {k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k: v
+            for k, v in sd.items()}
+
+
 def local_frame(x_obs: torch.Tensor):
     """
     Aircraft-centric local frame of the last observation.

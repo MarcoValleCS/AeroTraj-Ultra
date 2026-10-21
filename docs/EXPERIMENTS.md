@@ -1181,13 +1181,23 @@ solo dopo un controllo di equivalenza numerica su 24 576 finestre di test
 
 | variante | latenza | guadagno | MDE | ΔMDE |
 |---|---:|---:|---:|---:|
-| eager + `no_grad` (baseline precedente) | 19,59 ms | — | 1000,24 m | — |
-| eager + `torch.inference_mode()` | **15,7–18,3 ms** | **1,20×** | 1000,24 m | **0,000 %** |
-| `torch.compile(reduce-overhead)` | **4,1–5,5 ms** | **4,4–6,1×** | 1000,25 m | +0,0014 % |
+| eager + `no_grad` (baseline precedente) | 19,3–20,7 ms | — | 1000,24 m | — |
+| eager + `torch.inference_mode()` | **17,2–19,6 ms** | **1,05–1,20×** | 1000,24 m | **0,000 %** |
+| `torch.compile(reduce-overhead)` | **2,8–6,5 ms** | **3,0–7,4×** | 1000,25 m | +0,0014 % |
 
-Throughput (aerei/s): eager 55 · 5 964 · 27 662 · 56 986 a batch 1 · 128 · 512 · 4096;
-**compiled 181 · 16 907 · 70 744 · 69 760**. A batch 512 il modello compilato scende a
-**14 µs per aereo**, cioè il costo *marginale* misurato in §6.10: l'overhead di lancio è
+Gli intervalli sono su run indipendenti ripetute: il percorso compilato è il più rumoroso
+perché inductor specializza sulla **forma** dell'input, quindi la selezione dei kernel dipende
+dall'autotune e da come viene catturato il grafo di replay. L'affermazione conservativa è
+**≥3×**, quella tipica **~5–6×**. (Un primo harness aveva un difetto proprio qui:
+`FastPredictor.warmup()` corto-circuitava su un flag booleano, quindi ogni forma di batch
+diversa dalla prima si compilava *durante* la misura, gonfiandola fino a 2,5×; ora le forme
+riscaldate sono tracciate una per una.)
+
+Throughput (aerei/s): deterministico eager 56 · 6 483 · 27 528 · 51 817 · 56 220 a batch
+1 · 128 · 512 · 2048 · 4096; **compiled 155–178 · 24 104 · 28 336–75 296 · 62 730–73 206 ·
+67 605–73 345**. Con il retrieval: eager 31 · 3 880 · 12 370 · 17 461 · 17 231; **compiled
+109 · 10 151 · 22 111 · 20 016 · 20 968**. A batch 2048-4096 il modello compilato scende a
+**14–15 µs per aereo**, cioè il costo *marginale* misurato in §6.10: l'overhead di lancio è
 sparito.
 
 1. **`torch.inference_mode()`**: −20 % e output **bit-identico** (`max|Δ| = 0,00e+00`).
@@ -1201,20 +1211,46 @@ sparito.
    discreta è una proprietà dell'architettura (STE), non di `torch.compile`.
 
 **Il collo residuo è la ricerca del retrieval, non la rete.** A batch 512 il forward
-compilato costa **6,6 ms**, la `top-k` su 342 572 candidati **~20 ms**. Non sono i FLOP (17
-GFLOP a batch 4096, <1 ms su una 4070): è traffico + lancio di kernel.
+compilato costa **6,7 ms** e la `top-k` su 342 572 candidati **16,3 ms**: il 70 % della
+pipeline completa (23,2 ms). Non sono i FLOP (17 GFLOP a batch 4096, <1 ms su una 4070): è
+traffico + lancio di kernel. Esistono **due dimensioni di blocking** e **interagiscono**: il
+numero di lancio è ≈ (B/block) × (M/cand_block), quindi rimpicciolire una mentre l'altra è già
+piccola fa esplodere il conteggio (`bench_retrieval_grid.py`, host libero):
+
+| configurazione | B=512 | B=4096 | picco MiB | vicini |
+|---|---:|---:|---:|---|
+| block 256, cand_block None | 21,0 ms | 167,2 ms | 1 081 | 9/74 diversi (tie) |
+| block 16, cand_block None | 17,1 ms | 133,6 ms | 140 | 9/74 diversi (tie) |
+| **block 512, cand_block 16 384** | **16,5 ms** | **130,3 ms** | **178** | riferimento |
+| block 256, cand_block 16 384 | 17,7 ms | 144,9 ms | 125 | identici |
+| block 256, cand_block 4 096 | 80,2 ms | 585,7 ms | 94 | 4/60 diversi |
+| block 64, cand_block 16 384 | 80,7 ms | 608,7 ms | 95 | identici |
+| block 16, cand_block 16 384 | **240,0 ms** | **1 622,5 ms** | 80 | identici |
+
+Il default adottato è **`block=512` insieme a `cand_block=16384`**: la configurazione più
+veloce misurata, con 178 MiB di picco invece di 1 081. Da notare l'ultima riga: la
+combinazione "ovvia" delle due scelte individualmente migliori è una **regressione di 13×** —
+una misura che ragionando non si sarebbe presa.
+
+Le due leve in più misurate e **scartate**:
 
 | leva | effetto | vicini | verdetto |
 |---|---|---|---|
-| `block=16` invece di 256 (query per blocco) | **−12 %** a batch 4096 | **identici** | **adottata** (nuovo default) |
-| top-k bloccato sui candidati (`cand_block=16k`) | ≈ −12 %, e **−20× di picco** (351 MB → 17 MB) | identici | **adottata** |
-| distanze in fp16 | −30 % | **diversi sul 99,9 % delle query** | **scartata** |
+| distanze in fp16 | −30 % | **diverse sul 99,9 % delle query** | **scartata** |
 | pool con 1 candidato per volo (342 572 → 75 624) | **5,5× più veloce** | pool diverso ⇒ MDE **+0,127 %** | **opt-in** |
 
 Il pool potato è l'unica leva che rimuove il *traffico* invece di riorganizzarlo, e il
 costo è reale: +1,21 m di MDE (949,29 → 950,50 m su 12 288 finestre), concentrato sui lunghi
 (+8,9 m a 300 s). Esposto come `build_pool(..., one_per_flight=True)`, **non** default: il
 default conserva la qualità.
+
+**La search del retrieval è intrinsecamente instabile.** Lancia centinaia di kernel minimi,
+quindi la sua latenza insegue il carico CPU in un modo in cui il forward del modello non fa:
+misurata *sulla stessa macchina*, a batch 512 va da **17 ms** (host libero) a **228 ms**
+(CPU saturata dalla build del dataset e disco che scriveva 10 GB), un fattore 13; il modello
+base nelle stesse due condizioni si muove meno del 5 %. In deploy significa che è il
+*retrieval* il componente da dimensionare sul caso peggiore, o da sostituire con una ricerca
+indicizzata.
 
 **Scartate, con la ragione** (registrare i tentativi falliti è utile quanto registrare quelli riusciti):
 
@@ -1232,6 +1268,75 @@ default conserva la qualità.
 retrieval lancia centinaia di kernel, quindi la sua latenza è sensibile al carico CPU — i
 confronti *relativi* sono tutti interni a una stessa run, dove il carico è comune alle due
 braccia.
+
+### 6.12 Run a 365 giorni, 150 epoche
+
+**Setup.** `config_365d.json`: 365 giorni consecutivi 2022-01-01 → 2022-12-31, split
+**293/36/36**, stesso orizzonte 5-300 s (13 punti), stessa architettura (1 276 983
+parametri), stessa ricetta (AdamW 1e-3 + OneCycle, batch 2048, 400 k campioni/epoca),
+**150 epoche** con `torch.compile(reduce-overhead)`, early stopping pazienza 20 /
+min_epoche 40. Build del dataset: **riuso di 180 giorni** copiando `data180` → `data365`
+(il cache per-giorno è ripartibile), scaricati solo i 185 mancanti, ~2,6 h.
+
+| | `data90` | `data180` | **`data365`** |
+|---|---:|---:|---:|
+| giorni | 90 | 180 | **365** |
+| voli unici | 97 509 | 208 313 | **438 215** |
+| punti a 5 s | 65,8 M | 147,4 M | **306,8 M** |
+| finestre (stride 1) | 36,4 M | 104,0 M | **258,1 M** |
+
+Training: **150 epoche in 42 minuti** (15,8 s/epoca), best all'**epoca 146** (val MDE
+952,3 m), early stopping armato ma **non attivato** — a 150 epoche il modello stava ancora
+migliorando (la loss di training scendeva fino all'ultima epoca).
+
+**Risultato: il confronto va fatto a parità di test set**, perché le due run hanno split
+diversi (marzo 2022 vs novembre-dicembre 2022). Ho quindi valutato ogni checkpoint su
+**entrambi** gli split, 60 000 finestre ciascuno (`eval_cross.py`):
+
+| test set | modello 90 g | modello **365 g** | Δ |
+|---|---:|---:|---:|
+| marzo 2022 (23-31/03) | 991,6 m | **847,3 m** | **−14,55 %** |
+| nov-dic 2022 (26/11-31/12) | 1 082,8 m | **926,0 m** | **−14,48 %** |
+
+Per orizzonte (split nov-dic):
+
+| | 5 s | 30 s | 60 s | 120 s | 180 s | 300 s |
+|---|---:|---:|---:|---:|---:|---:|
+| 90 giorni | 59,7 | 124,1 | 328,8 | 1 043,7 | 2 041,3 | 4 640,2 |
+| **365 giorni** | **56,8** | **111,3** | **290,9** | **903,6** | **1 741,1** | **3 930,6** |
+| Δ | −4,9 % | −10,3 % | −11,6 % | −13,4 % | −14,7 % | −15,3 % |
+
+**Letture**
+
+1. Il guadagno è **−14,5 %, misurato indipendentemente su due periodi di test diversi** e
+   concorde entro 0,07 punti: è il dato, non un artefatto del test set.
+2. È **monotono nell'orizzonte** (−5,3 % a 5 s → −15,8 % a 300 s sullo split di marzo):
+   più dati aiutano esattamente dove l'errore residuo è **intento** e non rumore di sensore
+   — la stessa firma del prior di retrieval (§6.7).
+3. È **~8× il guadagno 90 → 180 giorni** (−1,8 %): il rendimento del dato inizia a
+   comporre solo quando il vicinato di traiettorie è denso, coerente con un meccanismo
+   *retrieval-like* più che con semplice regolarizzazione.
+4. **Deriva temporale, misurata mentre facevo il confronto**: lo *stesso* modello è 7,0 %
+   peggiore a 60 s e 10,0 % peggiore a 300 s su nov-dic rispetto a marzo, ma 1,9 %
+   **migliore** a 5 s. Il periodo autunno/inverno è genuinamente più difficile dove conta
+   l'intento: un singolo test set sovra- o sotto-stima un modello a seconda della stagione.
+   **Implicazione: la valutazione cross-split dovrebbe essere il default**, non un extra.
+
+**Bug trovato e corretto (importante per la riproducibilità)**: salvando il checkpoint da un
+modello **compilato**, `torch.compile` prefissa tutte le chiavi con `_orig_mod.`, quindi
+`checkpoints_365/aerotraj_ultra_best.pt` **non era caricabile** da nulla che costruisse il
+modello non compilato (`eval_ckpt.py`, `predict.py`, `run.py --resume`). Corretto da
+entrambi i lati: `run.py` ora salva `getattr(model, "_orig_mod", model).state_dict()` (come
+già faceva `bench_run.py` con `_raw_module`) e i loader normalizzano con la nuova
+`model.normalize_state_dict()`, così anche i checkpoint già prodotti restano caricabili.
+
+**Sanity check del harness**: il modello a 90 giorni valutato sul *suo* test set dà
+**991,6 m**, identico al valore documentato nel benchmark — la catena di valutazione è
+coerente.
+
+**Costo**: 42 min di training + ~2,6 h di build (una tantum, ripartibile), ~10,3 GB di
+dataset su disco. La latenza di inferenza **non cambia** (stessa architettura, stessi
+1 276 983 parametri).
 
 ---
 

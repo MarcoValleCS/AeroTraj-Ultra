@@ -17,11 +17,12 @@ results. Formal spec: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Lab notebo
 |---|---|
 | **Task** | 4D trajectory prediction from ADS-B state vectors (lon, lat, alt, vx, vy, vz) |
 | **Horizon** | 5 s → 300 s (13 non-uniform steps), single forward pass |
-| **Data** | Real OpenSky ADS-B, up to **180 consecutive days**, 208 k unique flights |
+| **Data** | Real OpenSky ADS-B, up to **365 consecutive days**, **438 215 unique flights** (306.8 M 5 s points) |
 | **Model** | `AeroTrajUltra`, 1 276 839 parameters, ~0.6 GFLOP/step |
-| **Hardware** | 1× RTX 4070 (12 GB) — full 80-epoch run in ~25 min |
-| **Result** | **991.6 m** 3-D ECEF mean distance error (5 s–300 s) — best of 10 compared models |
-| **Speed** | 1 aircraft end-to-end in **19.6 ms** (20.1 ms incl. retrieval prior) · **57 702 aircraft/s** at batch 4096 · only 1.17× the cost of a single horizon |
+| **Hardware** | 1× RTX 4070 (12 GB) — 150-epoch run on 365 days in **42 min** |
+| **Result** | **991.6 m** 3-D ECEF mean distance error (5 s–300 s) — best of 10 compared models, 90-day run |
+| **Best (365 days)** | **847.3 m** on the March split and **926.0 m** on the Nov–Dec split — **−14.5 %** vs the same model trained on 90 days, *apples-to-apples on the same test set* |
+| **Speed** | 1 aircraft end-to-end in **19.3–20.7 ms**, or **2.8–6.5 ms** with `torch.compile` (3–7×, verified MDE-neutral) · **67 600–73 300 aircraft/s** at batch 4096 · latency flat in the horizon (1.17× for 13 horizons) |
 | **Code** | `model.py` (architecture) · `run.py` (training) · `bench_models.py` (literature replications) |
 | **Uncertainty** | multi-hypothesis head (K=8) + conformal calibration → certified 90 % band with a 56 % smaller radius |
 
@@ -395,21 +396,49 @@ same 90-day dataset, same chronological splits, same horizon grid (extended from
 
 ### 4.5 Effect of the amount of data (identical recipe)
 
+**The 365-day run.** Same architecture, same 5 s → 300 s grid, same recipe, but trained on
+**365 consecutive days** (293/36/36) instead of 90: **438 215 unique flights** and 306.8 M
+5-second points, i.e. **4.5× the flights** of the 90-day dataset. 150 epochs with
+`torch.compile`, 15.8 s/epoch (**42 min** total), best checkpoint at epoch 146
+(val MDE 952.3 m).
+
+The decisive comparison is *apples-to-apples on the same test set*, because the two runs have
+different test splits. Each checkpoint is therefore evaluated on **both** splits
+(`eval_cross.py`, 60 000 windows each):
+
+| test split | 90-day model | **365-day model** | Δ |
+|---|---:|---:|---:|
+| March 2022 (2022-03-23 → 03-31) | 991.6 m | **847.3 m** | **−14.55 %** |
+| Nov–Dec 2022 (2022-11-26 → 12-31) | 1 082.8 m | **926.0 m** | **−14.48 %** |
+
+**Findings.**
+
+* The gain is **−14.5 %, measured independently on two different test periods** and agreeing
+  to within 0.07 points: it is the data, not a test-set artefact.
+* The gain is **monotone in the horizon**: −5.3 % at 5 s → −15.8 % at 300 s (March split),
+  −4.9 % → −15.3 % (Nov–Dec split). More data helps exactly where the remaining error is
+  *intent* rather than sensor noise — the same signature as the retrieval prior (§4.3).
+* It is also **~8× larger than the 90 → 180 day gain** (−1.8 %), i.e. the data returns only
+  start to compound once the neighbourhood is dense, which is consistent with a
+  retrieval-like mechanism rather than with plain regularisation.
+* **A caution about temporal drift**, measured while doing the above: the *same* model is
+  7 % worse at 60 s and 10 % worse at 300 s on Nov–Dec than on March, but 1.9 % *better* at
+  5 s. The winter period is genuinely harder where intent matters, so a single test split
+  understates or overstates a model depending on its season. Cross-split evaluation should
+  be the default, not an extra.
+
+**Earlier data-scaling runs** (for reference; different horizon grid in the right column):
+
 | Dataset | Train days | Unique flights | MDE, 5 s → 180 s | MDE, 5 s → 600 s |
 |---|---:|---:|---:|---:|
 | 40 days | 32 | 3 118 | 3 321.3 m³ | 3 019.5 m |
 | 90 days | 72 | 76 939 | 539.3 m¹ | 2 751.0 m |
 | 180 days | 144 | 164 410 | — | 527.6 m² |
 
-¹ apples-to-apples on the *same* held-out test split (the 90-day model evaluated on the
-180-day test set, and vice-versa); ² different horizon grid, 18 test days; ³ legacy 40-day
-CPU run, different machine — shown for reference only.
-
-Going from 40 to 90 days of training data cuts the error on the **same 5 s → 600 s grid by
-8.9 %** (3 019.5 → 2 751.0 m), while doubling again to 180 days gains only **1.8 %** on the
-5 s → 180 s grid (539.3 → 529.4 m, apples-to-apples on the same test set): the extra data buys
-accuracy where the trajectory is uncertain (long horizon, route divergence) and nothing where
-the error is dominated by sensor quantisation.
+¹ apples-to-apples on the *same* held-out test split; ² different horizon grid, 18 test days;
+³ legacy 40-day CPU run, different machine — shown for reference only. Going from 40 to 90
+days cut the error on the **same 5 s → 600 s grid by 8.9 %** (3 019.5 → 2 751.0 m), while
+doubling again to 180 days gained only **1.8 %**.
 
 ### 4.6 Where the remaining error comes from
 
@@ -457,21 +486,48 @@ after `cuda.synchronize()`, plus a per-call CUDA-event measurement of the GPU-bu
 
 **Findings.**
 
-* One aircraft, **whole 5–300 s horizon vector, in 19.6 ms**; the retrieval intent prior adds
-  only **+0.5 ms**. At 4096 aircraft the model sustains **57 702 aircraft/s** (17.3 µs each).
+* One aircraft, **whole 5–300 s horizon vector, in 19.3–20.7 ms**; the retrieval intent prior
+  adds **+0.5 ms** (eager) and the whole thing is **3.4 ms** compiled. At 4096 aircraft the
+  model sustains **67 600–73 300 aircraft/s** compiled (14 µs each).
 * **The batch-1 case is launch-bound, not compute-bound.** The average cost per aircraft at
-  batch 1 is 19 591 µs but the *marginal* cost of one more aircraft is **12.6 µs**: **99.94 %**
+  batch 1 is 19,591 µs but the *marginal* cost of one more aircraft is **12.6 µs**: **99.94 %**
   of the single-aircraft latency is fixed per-call overhead. Confirmed twice over: batching
-  improves the per-aircraft cost by **1 133×**, and `torch.compile` takes batch 1 from
-  19.59 ms to **4.47 ms** (4.4×) with no change in the mathematics.
+  improves the per-aircraft cost by **>1000×**, and `torch.compile` takes batch 1 to
+  2.8–6.5 ms (3–7×) with no change in the metric (§4.9).
 * **Latency is flat in the horizon.** 13 horizons spanning 5–300 s cost **1.17×** a single
   horizon (`bench_latency_horizon.py`). Autoregressive models pay per step, which is exactly
   why CFM (20 steps) and DDPM (50 steps) are 4.7× and 13× slower here.
 * The two generative models are **dominated**: slower *and* less accurate than
   AeroTraj-Ultra. See the Pareto figure `docs/figures/pareto_accuracy_latency.png`.
 * Measured limitation: the exact retrieval top-k is `O(B × M)` over 342 572 candidates and
-  **stops scaling after batch ~512** (at batch 512 it already costs as much as the whole
-  forward pass). Fleet-scale inference needs an indexed or approximate search.
+  **stops scaling after batch ~512** (at batch 512 it costs **17.1 ms against a 7.0 ms
+  forward pass**, 70 % of the pipeline). Fleet-scale inference needs an indexed or
+  approximate search.
+
+### 4.9 Inference optimisations (quality-verified)
+
+Three changes were adopted, each after checking on 24,576 test windows that the 3-D ECEF
+error does not move:
+
+| change | batch-1 latency | speed-up | Δ MDE |
+|---|---:|---:|---:|
+| baseline: `torch.no_grad()` | 19.3–20.7 ms | — | — |
+| `torch.inference_mode()` | 17.2–19.6 ms | 1.05–1.20× | **0.000 %** (bit-identical) |
+| **`torch.compile(mode="reduce-overhead")`** | **2.8–6.5 ms** | **3.0–7.4×** | **+0.0014 %** |
+
+Throughput goes from 56,220 to **67,600–73,300 aircraft/s** at batch 4096. `torch.compile`
+is *not* bit-identical and the reason is structural: the Gray-Code decoder thresholds at
+0.5, so float noise becomes a discrete bit flip on a tail of windows (p50 0.79 m, p99 7.4 m,
+0.06 % above 100 m) — while the aggregate error, the per-horizon profile (worst case
++0.076 m) and therefore the conformal band are unchanged. Use `inference.py`'s
+`FastPredictor`, which wraps all of it (`warmup()` pays the one-off 5–7 s compile).
+
+Also measured and **rejected**, with the reason: a hand-captured `torch.cuda.CUDAGraph`
+corrupts the CUDA caching allocator on this stack (`Offset increment outside graph capture`)
+and breaks `torch.compile` afterwards; fp16 retrieval distances change the retrieved
+neighbours on 99.9 % of queries; a pool with one candidate per flight is 5.5× faster but
+costs **+0.127 %** MDE, so it is opt-in (`build_pool(..., one_per_flight=True)`), not the
+default. Full detail in [`docs/PAPER.md`](docs/PAPER.md) §8.6.
 
 ---
 
@@ -486,7 +542,16 @@ after `cuda.synchronize()`, plus a per-call CUDA-event measurement of the GPU-bu
 ├── bench_run.py             benchmark harness (train + evaluate + compare)
 ├── bench_experiments.py     post-hoc analyses (ensembles, MC-dropout, error floor)
 ├── bench_latency.py         inference latency + throughput benchmark (CUDA events)
+├── bench_latency_opt.py     latency after the optimisations (eager vs compiled)
 ├── bench_latency_horizon.py latency vs number of horizons (non-autoregressive check)
+├── bench_opt.py             inference-variant matrix (no_grad / inference_mode / compile)
+├── bench_retrieval.py       retrieval search: blocked vs single-shot
+├── bench_retrieval_block.py retrieval: query block, fp16, pruned pool
+├── bench_retrieval_grid.py  retrieval: the two blocking dimensions interact
+├── check_compile_quality.py does torch.compile change the metric? (24 576 windows)
+├── check_pool_quality.py    does the pruned pool change the metric?
+├── eval_cross.py            cross-test-set evaluation (isolates the data effect)
+├── inference.py             FastPredictor: compiled + inference_mode inference path
 ├── plot_pareto.py           accuracy-versus-latency Pareto figure
 ├── plot_architecture.py     architecture overview figure
 ├── calibrate_uncertainty.py conformal calibration of the multi-hypothesis ensemble

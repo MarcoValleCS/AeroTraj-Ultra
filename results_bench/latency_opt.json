@@ -13,198 +13,198 @@
   "batch1": [
     {
       "label": "eager + no_grad",
-      "median_ms": 19.985999999335036,
-      "p95_ms": 36.05350500110942,
-      "gpu_ms": 20.058704376220703,
-      "warmup_ms": 270.8234000001539
+      "median_ms": 19.85034999961499,
+      "p95_ms": 36.45355499975266,
+      "gpu_ms": 20.384160041809082,
+      "warmup_ms": 314.76820000170846
     },
     {
       "label": "eager + inference_mode",
-      "median_ms": 18.828200000825746,
-      "p95_ms": 35.21667999866621,
-      "gpu_ms": 19.33004856109619,
-      "warmup_ms": 22.40469999924244
+      "median_ms": 19.184150000000955,
+      "p95_ms": 25.639560001400238,
+      "gpu_ms": 18.976287841796875,
+      "warmup_ms": 24.091699997370597
     },
     {
       "label": "compile(reduce-overhead)",
-      "median_ms": 2.774199999294069,
-      "p95_ms": 5.2542450005603305,
-      "gpu_ms": 2.7893760204315186,
-      "warmup_ms": 7382.571900001494
+      "median_ms": 3.4188499994343147,
+      "p95_ms": 4.489440001816547,
+      "gpu_ms": 2.995711922645569,
+      "warmup_ms": 7086.731100000179
     },
     {
       "label": "+ retrieval, eager",
-      "median_ms": 30.017550000593474,
-      "p95_ms": 42.71750499956396,
-      "gpu_ms": 25.54627227783203,
-      "warmup_ms": 63.152200000331504
+      "median_ms": 25.136800000836956,
+      "p95_ms": 49.6997949992874,
+      "gpu_ms": 27.1779842376709,
+      "warmup_ms": 60.27469999753521
     },
     {
       "label": "+ retrieval, compiled",
-      "median_ms": 9.354300000268267,
-      "p95_ms": 15.389730000333646,
-      "gpu_ms": 9.198080062866211,
-      "warmup_ms": 5330.474899999899
+      "median_ms": 9.326749999672757,
+      "p95_ms": 14.938605002134851,
+      "gpu_ms": 9.423359870910645,
+      "warmup_ms": 5182.75690000155
     }
   ],
   "throughput": {
     "base eager": {
       "1": {
-        "total_ms": 17.718350000905048,
-        "per_aircraft_us": 17718.350000905048,
-        "aircraft_per_s": 56.43866386818865
+        "total_ms": 17.887149999296525,
+        "per_aircraft_us": 17887.149999296525,
+        "aircraft_per_s": 55.90605546659633
       },
       "8": {
-        "total_ms": 18.474800000149116,
-        "per_aircraft_us": 2309.3500000186395,
-        "aircraft_per_s": 433.0222789927593
+        "total_ms": 18.58879999963392,
+        "per_aircraft_us": 2323.59999995424,
+        "aircraft_per_s": 430.3666724133644
       },
       "32": {
-        "total_ms": 18.669550000595336,
-        "per_aircraft_us": 583.4234375186043,
-        "aircraft_per_s": 1714.0209592078857
+        "total_ms": 19.712999999683234,
+        "per_aircraft_us": 616.0312499901011,
+        "aircraft_per_s": 1623.2942728409782
       },
       "128": {
-        "total_ms": 21.462499999870488,
-        "per_aircraft_us": 167.6757812489882,
-        "aircraft_per_s": 5963.890506733716
+        "total_ms": 19.74384999994072,
+        "per_aircraft_us": 154.24882812453689,
+        "aircraft_per_s": 6483.031424994837
       },
       "512": {
-        "total_ms": 18.509350000385894,
-        "per_aircraft_us": 36.1510742195037,
-        "aircraft_per_s": 27661.69530476897
+        "total_ms": 18.59945000069274,
+        "per_aircraft_us": 36.32705078260301,
+        "aircraft_per_s": 27527.695710407053
       },
       "2048": {
-        "total_ms": 43.948800001089694,
-        "per_aircraft_us": 21.459375000532077,
-        "aircraft_per_s": 46599.67962604714
+        "total_ms": 39.52405000018189,
+        "per_aircraft_us": 19.298852539151312,
+        "aircraft_per_s": 51816.55220025719
       },
       "4096": {
-        "total_ms": 71.87715000054595,
-        "per_aircraft_us": 17.54813232435204,
-        "aircraft_per_s": 56986.12145819483
+        "total_ms": 72.85690000207978,
+        "per_aircraft_us": 17.78732910207026,
+        "aircraft_per_s": 56219.795240849875
       }
     },
     "base compiled": {
       "1": {
-        "total_ms": 5.526250000002619,
-        "per_aircraft_us": 5526.250000002619,
-        "aircraft_per_s": 180.954535172952
+        "total_ms": 6.4497999992454425,
+        "per_aircraft_us": 6449.799999245442,
+        "aircraft_per_s": 155.04356726053356
       },
       "8": {
-        "total_ms": 3.9990000004763715,
-        "per_aircraft_us": 499.87500005954644,
-        "aircraft_per_s": 2000.5001247929529
+        "total_ms": 4.144450000239885,
+        "per_aircraft_us": 518.0562500299857,
+        "aircraft_per_s": 1930.292318531277
       },
       "32": {
-        "total_ms": 5.191799999920477,
-        "per_aircraft_us": 162.2437499975149,
-        "aircraft_per_s": 6163.5656228071475
+        "total_ms": 4.207850000966573,
+        "per_aircraft_us": 131.4953125302054,
+        "aircraft_per_s": 7604.833820751541
       },
       "128": {
-        "total_ms": 7.570899999336689,
-        "per_aircraft_us": 59.14765624481788,
-        "aircraft_per_s": 16906.840667716453
+        "total_ms": 5.3103999998711515,
+        "per_aircraft_us": 41.48749999899337,
+        "aircraft_per_s": 24103.645676993394
       },
       "512": {
-        "total_ms": 7.237350000650622,
-        "per_aircraft_us": 14.135449220020746,
-        "aircraft_per_s": 70744.12595134578
+        "total_ms": 18.06860000033339,
+        "per_aircraft_us": 35.29023437565115,
+        "aircraft_per_s": 28336.451080357798
       },
       "2048": {
-        "total_ms": 28.678599999693688,
-        "per_aircraft_us": 14.003222656100434,
-        "aircraft_per_s": 71412.13308954671
+        "total_ms": 32.647599999108934,
+        "per_aircraft_us": 15.941210937064909,
+        "aircraft_per_s": 62730.49167644473
       },
       "4096": {
-        "total_ms": 58.71534999914729,
-        "per_aircraft_us": 14.33480224588557,
-        "aircraft_per_s": 69760.29266724094
+        "total_ms": 60.587199999645236,
+        "per_aircraft_us": 14.791796874913388,
+        "aircraft_per_s": 67605.03868843557
       }
     },
     "retrieval eager": {
       "1": {
-        "total_ms": 24.822950000270794,
-        "per_aircraft_us": 24822.950000270794,
-        "aircraft_per_s": 40.28530049768827
+        "total_ms": 31.17364999889105,
+        "per_aircraft_us": 31173.64999889105,
+        "aircraft_per_s": 32.078373884212255
       },
       "8": {
-        "total_ms": 27.236549999543058,
-        "per_aircraft_us": 3404.5687499428823,
-        "aircraft_per_s": 293.72295684050346
+        "total_ms": 27.737249998608604,
+        "per_aircraft_us": 3467.1562498260755,
+        "aircraft_per_s": 288.42080597035783
       },
       "32": {
-        "total_ms": 31.960950000211596,
-        "per_aircraft_us": 998.7796875066124,
-        "aircraft_per_s": 1001.2218034754331
+        "total_ms": 29.979200000525452,
+        "per_aircraft_us": 936.8500000164204,
+        "aircraft_per_s": 1067.4067353177913
       },
       "128": {
-        "total_ms": 76.05945000068459,
-        "per_aircraft_us": 594.2144531303484,
-        "aircraft_per_s": 1682.8941045307047
+        "total_ms": 27.98534999965341,
+        "per_aircraft_us": 218.63554687229225,
+        "aircraft_per_s": 4573.821660318175
       },
       "512": {
-        "total_ms": 224.1635000000315,
-        "per_aircraft_us": 437.8193359375615,
-        "aircraft_per_s": 2284.047135238021
+        "total_ms": 32.39965000102529,
+        "per_aircraft_us": 63.280566408252525,
+        "aircraft_per_s": 15802.639842831564
       },
       "2048": {
-        "total_ms": 827.5799500006542,
-        "per_aircraft_us": 404.09177246125694,
-        "aircraft_per_s": 2474.6853763172744
+        "total_ms": 105.69184999803838,
+        "per_aircraft_us": 51.60734863185468,
+        "aircraft_per_s": 19377.085366922904
       },
       "4096": {
-        "total_ms": 1755.4858499997863,
-        "per_aircraft_us": 428.5854125976041,
-        "aircraft_per_s": 2333.257200563877
+        "total_ms": 211.67274999788788,
+        "per_aircraft_us": 51.677917479953095,
+        "aircraft_per_s": 19350.624962546528
       }
     },
     "retrieval compiled": {
       "1": {
-        "total_ms": 9.979749999729393,
-        "per_aircraft_us": 9979.749999729393,
-        "aircraft_per_s": 100.20291089727856
+        "total_ms": 9.414650001417613,
+        "per_aircraft_us": 9414.650001417613,
+        "aircraft_per_s": 106.21743770075625
       },
       "8": {
-        "total_ms": 10.587149999992107,
-        "per_aircraft_us": 1323.3937499990134,
-        "aircraft_per_s": 755.6330079394327
+        "total_ms": 14.956749999328167,
+        "per_aircraft_us": 1869.593749916021,
+        "aircraft_per_s": 534.8755578825177
       },
       "32": {
-        "total_ms": 16.599950000454555,
-        "per_aircraft_us": 518.7484375142049,
-        "aircraft_per_s": 1927.7166496961586
+        "total_ms": 15.132200001971796,
+        "per_aircraft_us": 472.88125006161863,
+        "aircraft_per_s": 2114.695813948418
       },
       "128": {
-        "total_ms": 52.691150000100606,
-        "per_aircraft_us": 411.649609375786,
-        "aircraft_per_s": 2429.2504528702752
+        "total_ms": 13.697999998839805,
+        "per_aircraft_us": 107.01562499093598,
+        "aircraft_per_s": 9344.429844564269
       },
       "512": {
-        "total_ms": 262.1050500001729,
-        "per_aircraft_us": 511.92392578158774,
-        "aircraft_per_s": 1953.4152432380156
+        "total_ms": 24.697949998881086,
+        "per_aircraft_us": 48.23818359156462,
+        "aircraft_per_s": 20730.465484916585
       },
       "2048": {
-        "total_ms": 888.9946000008422,
-        "per_aircraft_us": 434.07939453166125,
-        "aircraft_per_s": 2303.7260293797735
+        "total_ms": 99.75144999953045,
+        "per_aircraft_us": 48.70676269508323,
+        "aircraft_per_s": 20531.029874850345
       },
       "4096": {
-        "total_ms": 2007.5346499997977,
-        "per_aircraft_us": 490.1207641601069,
-        "aircraft_per_s": 2040.313476034106
+        "total_ms": 196.01399999919522,
+        "per_aircraft_us": 47.85498046855352,
+        "aircraft_per_s": 20896.466579003627
       }
     }
   },
   "retrieval_diagnostic": {
-    "search_before_compile_ms": 201.06854248046875,
-    "context_before_compile_ms": 198.6518783569336,
-    "search_with_eager_model_ms": 231.38195037841797,
-    "forward_only_eager_ms": 18.293760299682617,
-    "full_eager_ms": 254.59999999930005,
-    "search_with_compiled_model_ms": 225.03014373779297,
-    "forward_only_compiled_ms": 6.582783937454224,
-    "full_compiled_ms": 214.48994999991555
+    "search_before_compile_ms": 17.117183685302734,
+    "context_before_compile_ms": 17.543679237365723,
+    "search_with_eager_model_ms": 17.57747173309326,
+    "forward_only_eager_ms": 18.564096450805664,
+    "full_eager_ms": 30.821349999314407,
+    "search_with_compiled_model_ms": 17.467455863952637,
+    "forward_only_compiled_ms": 6.990848064422607,
+    "full_compiled_ms": 24.77790000011737
   }
 }

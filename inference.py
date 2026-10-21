@@ -85,6 +85,8 @@ class FastPredictor:
         if checkpoint and Path(checkpoint).exists():
             sd = torch.load(checkpoint, map_location=self.device, weights_only=False)
             sd = sd.get("model_state_dict", sd)
+            from model import normalize_state_dict
+            sd = normalize_state_dict(sd)
             missing, unexpected = self.model.load_state_dict(sd, strict=False)
             self.loaded_from = checkpoint
             if unexpected:
@@ -96,7 +98,7 @@ class FastPredictor:
 
         self.compile_mode = compile_mode
         self.fn = self.model
-        self._compiled = False
+        self._warmed: set = set()
         if compile_mode and compile_mode != "none":
             if compile_mode not in COMPILE_MODES:
                 raise ValueError(f"compile_mode must be one of {COMPILE_MODES}")
@@ -108,8 +110,14 @@ class FastPredictor:
         Run one forward so that compilation (and inductor's CUDA-graph
         preparation) happens now rather than on the first real request.
         Returns the one-off cost in milliseconds.
+
+        Inductor specialises on the input SHAPE, so every new batch size pays its
+        own compilation: the warmed shapes are tracked and each is paid once.
+        (An earlier version short-circuited on a single boolean flag, which left
+        every batch size other than the first to recompile *during* whatever
+        measurement followed, inflating it by up to 2.5x.)
         """
-        if self._compiled:
+        if batch_size in self._warmed:
             return 0.0
         x = torch.zeros(batch_size, self.cfg["window"]["inp_seq_len"], 9,
                         device=self.device)
@@ -117,7 +125,7 @@ class FastPredictor:
         with torch.inference_mode():
             self._run(x)
         torch.cuda.synchronize()
-        self._compiled = True
+        self._warmed.add(batch_size)
         return (time.perf_counter() - t0) * 1e3
 
     def _run(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
