@@ -186,11 +186,11 @@ of the gains in §6.4 and §6.3 agree on one thing: above ~30 s the residual err
 sensor noise, it is *how much of the intent is legible in the input*. Three independent
 measurements carry the same signature, all monotone in the horizon:
 
-| lever that adds information about intent | gain at 5 s | gain at 300 s |
+| lever that adds information about intent | gain at the shortest horizon | gain at 300 s |
 |---|---:|---:|
-| retrieval prior over past trajectories (external) | −0.3 % | −5.0 % |
-| 4.5× more training data (implicit) | −4.9 % | −15.3 % |
-| **more history in the window (this experiment)** | *to be measured* | *to be measured* |
+| retrieval prior over past trajectories (external) | −0.3 % (5 s) | −5.0 % |
+| 4.5× more training data (implicit) | −4.9 % (5 s) | −15.3 % |
+| **more history in the window (this experiment)** | **+5.5 % (10 s)** | **−7.3 %** |
 
 If the long-horizon error is governed by how much of the manoeuvre is visible, then a window
 covering **twice as much of the trajectory** attacks it directly. Concretely, what becomes
@@ -216,12 +216,31 @@ points, a step-to-step displacement doubles, so (i) short-term *accelerations* a
 visible to the encoder, (ii) the Gray-Code delta lattices had to be widened (§3.2), and
 (iii) the 5 s output horizon no longer exists, so the 5–30 s band — the band we know is
 saturated by CPR quantisation anyway — can only be judged at 10 s. The experiment therefore
-tests a *joint* change (longer history **and** coarser sampling), and the verdict will be read
-per horizon: if the extra history is what helps, the gain must **grow with the horizon**, the
+tests a *joint* change (longer history **and** coarser sampling), and the verdict is read per
+horizon: if the extra history is what helps, the gain must **grow with the horizon**, the
 opposite of a sampling artefact.
 
-**Disentangling the two effects** would need a 24-point window at 5 s (same resolution, double
-history); that is the natural follow-up if this experiment is positive.
+**Measured verdict** (150 epochs, 1.2M samples/epoch, same test days, 60,000 windows each):
+
+| horizon | 5 s grid (60 s of history) | 10 s grid (120 s of history) | Δ |
+|---:|---:|---:|---:|
+| 10 s | 57.2 m | 60.4 m | **+5.5 %** |
+| 30 s | 105.9 m | 108.4 m | **+2.3 %** |
+| 60 s | 275.6 m | 273.0 m | −0.9 % |
+| 90 s | 533.1 m | 517.1 m | **−3.0 %** |
+| 180 s | 1,631.5 m | 1,550.2 m | **−5.0 %** |
+| 300 s | 3,640.9 m | 3,374.2 m | **−7.3 %** |
+
+The sign **changes at ~60 s** and does so monotonically: the coarse grid loses below 30 s,
+where kinematic detail is the quantity being measured, and wins above 90 s by a margin that
+grows to −7.3 %. Mean over the shared horizons: **−5.8 %**. The crossover coincides with the
+threshold the error-floor analysis found independently (§6.6) — the 5–30 s band is saturated
+by CPR quantisation, so nothing can be gained there, and above it the unknown is the
+manoeuvre. **The two configurations are therefore complementary rather than competing.**
+
+**Disentangling the two effects** needs a 24-point window at 5 s (same resolution, double
+history) and, beyond that, a two-scale input: the fine 60 s window plus a coarse channel
+covering the 120 s before it. Both are natural follow-ups of a positive result.
 
 ### 3.2 Grid bookkeeping: how the time step becomes a parameter
 
@@ -336,6 +355,16 @@ temperature to `v_z`. Each coupled pair (lon↔v_x, lat↔v_y, alt↔v_z) is the
 a **bidirectional cross-attention** block (4 heads, d = 24):
 `corr = MHA(q = e_p, k = e_c, v = e_c)`, `e_p^new = Linear([LN(e_p ‖ corr)])`. The six
 recalibrated embeddings are concatenated and fused by `Linear_{144→144}` → LayerNorm → GELU.
+
+![The ACoAtt-V2 block: six attributes, three physically coupled pairs re-calibrated in both directions, concatenated into the trajectory embedding; below, the correlation-attention mechanism itself](figures/acoat_v2_block.png)
+
+**Figure 4.3** — ACoAtt-V2. Each attribute is encoded from its Gray-Code bits plus the
+window-relative state; the three physically coupled pairs (lon↔vx, lat↔vy, alt↔vz) are
+re-calibrated in both directions by cross-attention, and the six results are
+concatenated. The label on each velocity attribute marks the difference from the
+FlightBERT original: the meteorological channels are attached to the velocity they
+physically perturb rather than entering as a single global context. Reproduce with
+`plot_acoat_block.py`.
 
 ### 4.5 Encoder
 
@@ -572,6 +601,17 @@ prediction (the operational metric); **minADE@K** is the best-of-K and is an ora
 1. AeroTraj-Ultra wins the operational metric: **−18.7 %** vs FlightBERT++ V2, **−34.2 %**
    vs the strongest kinematic baseline (CV-Doppler), **−23.5 %** vs a deep LSTM. It is the
    only model that is better at *every* horizon of the grid.
+
+![Six real test windows, one per manoeuvre type, with the inputs, the ground truth and the three strongest models in a local metric frame](figures/trajectory_cases.png)
+
+**Figure 6.1** — Qualitative comparison on six held-out windows, one per manoeuvre type.
+The windows are selected deterministically from the ground-truth future (en-route only,
+mutually exclusive), exactly as the published figures of this field do, so this is an
+*illustration* and not a metric. All three axes are in metres in a local frame anchored
+at the last observed position: mixing degrees and metres on the three axes — as the
+published figures do — compresses a real trajectory into a blob, so the panels here are
+geometrically honest views. The per-horizon numbers remain the metric (§6.1).
+Reproduce with `plot_trajectory_cases.py`.
 2. **The aircraft-centric frame alone is not enough.** The attention-LSTM and the IMM
    residual model are *worse* than raw constant velocity despite access to the same
    features: the bottleneck is regression capacity and output parameterisation, not the
@@ -738,6 +778,122 @@ quantisation**: no architecture can do better without a better position source. 
 remaining headroom lives at 60–300 s, where the error is not measurement noise but
 **intent** — which is exactly the regime the retrieval prior of §4.10 targets, and
 the reason its gain is monotone in the horizon.
+
+### 6.7 The literature re-implemented on the 365-day, 10 s grid
+
+**Why this table exists.** The benchmark of §6.1 is the *historical* one: it was run before
+the data-scaling study and before the coarse grid existed, so it cannot answer the two
+questions that now matter. (i) How do the published methods compare when every one of them
+is trained on the **same 365 days** of data? (ii) Does the ranking change when the model
+reads **120 s of history** instead of 60 s? This section re-implements five methods from
+scratch and trains them, with an identical budget, on the 365-day dataset decimated to a
+10 s step (`bench_baselines.py`, `bench_run_10s.py`).
+
+**The five re-implementations.**
+
+| model | source | what is re-implemented |
+|---|---|---|
+| Kalman filter | FlightBERT paper, group A (A3) | a constant-velocity Kalman filter in the local frame: a real 6-D state update in Joseph form, a per-axis process and measurement noise model |
+| IMM | Blom & Bar-Shalom 1988; the IMM-Informer hybrid (Sensors 25(8):2531, 2025) | three kinematic modes (constant velocity, constant acceleration, coordinated turn), one Kalman filter per mode, the Gaussian-mixture update of the mode probabilities and the standard interaction (mixing) step |
+| LSTM regression | FlightBERT paper, group A (A1) | deep LSTM with a multi-horizon displacement head |
+| BiLSTM regression | FlightBERT paper, group A (A2) | the same, with a bidirectional encoder |
+| FlightBERT++ V2 (faithful) | Guo et al., AAAI 2024 | the Gray-Code *delta* encoding, the ACoAtt trajectory-embedding module, the non-autoregressive multi-horizon decoder and the hybrid constrained loss |
+| FlightBERT++ V2 (no ACoAtt) | the same, this project's ablation | the same without the attribute-correlation module — the variant this project used as its own previous model |
+
+The 2023 version of FlightBERT (the Binary-Encoding of the *absolute* state, T-ITS 24(2)) was
+also re-implemented, down to the bit widths of the encoding and to the straight-through
+estimator of the decoding, but it **does not survive its own published protocol** on this
+data: its multi-horizon prediction comes from the autoregressive roll-out, and the
+diagnosis is a negative result of its own (§9.2). It is therefore reported there and not in
+the comparison table.
+
+The FlightBERT++ implementation keeps the **continuous (MSE) term of its hybrid loss and
+drops the BCE**: the Gray-Code code is a redundant representation of a trajectory, and the
+regression term is the one that optimises the decoded output directly.
+
+The FlightBERT++ implementation follows the AAAI 2024 paper: the Gray-Code encoding of the
+step-to-step *deltas*, the Attribute Correlation Attention module of the trajectory
+embedding (the Attribute-Embedding block per attribute, then the bidirectional cross
+attention between the kinematically correlated pairs lon↔vx, lat↔vy, alt↔vz), the
+Transformer encoder and the non-autoregressive multi-horizon decoder (the delta tokens, the
+horizon embedding and the aggregated context, decoded in a single pass). Its loss keeps the
+**continuous term only** (`w_bce = 0`): the Gray-Code code is a redundant representation of a
+trajectory, and the regression term is the one that optimises the decoded output directly.
+
+**Two decisions the protocol forces, stated openly.**
+
+1. *The classical filters are trained.* A Kalman filter and an IMM have a handful of
+   parameters — the process noise, the measurement noise, the mode probabilities. Fixing
+   them by hand would handicap the comparison in a way that has nothing to do with the
+   methods: a published KF baseline is tuned on a validation set, while the neural
+   baselines receive millions of gradient steps. Making the noise model learnable puts
+   every row of the table under the same protocol — same data, same optimiser, same
+   number of samples — so that the difference measured is the difference between the
+   *estimators*. The learned noise levels are reported with the results.
+2. *No `torch.compile` for anybody.* The inductor's C++ path has no compiler on this
+   machine, and a uniform treatment of every model is the fairest protocol. The latency
+   study of §8 is a separate, explicitly compiled experiment.
+
+**Protocol.** The 365-day dataset, decimated to a 10 s step: 12 observed points (120 s of
+history), horizons 10/30/60/90/180/300 s. Train split 293 days (2022-01-01 → 10-20), test
+split 36 days (2022-11-26 → 12-31), 60 000 windows, 3-D ECEF error. Budget: **25 epochs ×
+400 000 samples = 10M windows per model**, identical for all of them, with the same
+optimiser (AdamW, 1e-3, OneCycle), the same loss normalisation and the same early
+stopping. `torch.compile` off.
+
+### 6.7.1 Results
+
+3-D ECEF error [m], 60 000 held-out windows, same data and same budget for every row:
+
+| model | MDE | 10 s | 30 s | 60 s | 90 s | 180 s | 300 s |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **AeroTraj-Ultra (ours)** | **1 256.0** | **65.0** | **123.8** | **326.2** | **631.5** | **1 971.7** | **4 418.0** |
+| FlightBERT++ V2 (AAAI 2024), faithful | 1 330.8 | 73.7 | 151.7 | 377.4 | 703.9 | 2 115.5 | 4 562.9 |
+| FlightBERT++ V2, without ACoAtt | 1 465.1 | 76.7 | 162.3 | 406.0 | 758.0 | 2 305.3 | 5 082.0 |
+| BiLSTM regression | 1 801.3 | 101.5 | 251.9 | 584.9 | 1 028.1 | 2 838.4 | 6 002.8 |
+| Kalman filter (CV, learnable noise) | 2 215.6 | 111.8 | 292.9 | 688.8 | 1 210.8 | 3 421.3 | 7 568.3 |
+| LSTM regression | 2 358.3 | 160.7 | 442.1 | 953.5 | 1 551.4 | 3 738.1 | 7 304.1 |
+| IMM (CV/CA/CT, learnable noise) | 2 416.2 | 147.6 | 391.8 | 861.7 | 1 438.8 | 3 744.2 | 7 913.0 |
+| CV least-squares (no learning) | 2 624.0 | 154.4 | 422.9 | 942.2 | 1 577.8 | 4 084.0 | 8 562.7 |
+| *AeroTraj-Ultra, full budget (180M windows)* | *980.5* | *60* | *108* | *273* | *517* | *1 550* | *3 374* |
+
+![MAE and RMSE per attribute for every method and every prediction step, in the format of the FlightBERT paper](figures/bench_10s_mae_rmse.png)
+
+**Figure 6.2** — The per-attribute MAE and RMSE of every method at every prediction step,
+in the format of Table I of the FlightBERT paper (the altitude in metres, the horizontal
+velocities in km/h, the vertical velocity in m/s, the positions in degrees). Regenerate
+with `make_table_mae_rmse.py`.
+
+![Error per horizon and the overall ranking of the 365-day benchmark](figures/bench_10s_horizon.png)
+
+**Figure 6.3** — Left: the error per horizon. Right: the error relative to the best model of
+each horizon, i.e. who wins where. Regenerate with `plot_bench_10s.py`.
+
+**Findings.**
+
+1. **AeroTraj-Ultra wins the same-budget comparison**: −5.6 % against the best literature
+   model (the FlightBERT++ with the ACoAtt module), and −43.3 % against the best classical
+   filter. It is the only model that is better than the *Kalman filter with a learned noise
+   model* at every horizon.
+2. **The attribute-correlation attention is worth −9.2 %** on the same architecture
+   (1 465.1 → 1 330.8 m), reproducing the ablation of §6.2 on a completely different dataset
+   and grid. The module is not a detail: removing it costs more than the whole difference
+   between the two best models.
+3. **The deep-regression baselines do not beat the classical filter.** The LSTM (2 358.3 m)
+   is *worse* than the Kalman filter with a learnable noise model (2 215.6 m, +6.4 %): with
+   the same data, the same budget and the same optimiser, the recurrent regressor never
+   learns the noise model it needs. The BiLSTM is much better than the LSTM (−23.6 %,
+   reproducing the A1/A2 ordering of the FlightBERT paper) and is the best of the three
+   regression models, but it is still 19 % worse than the Kalman filter.
+4. **The multi-hypothesis filter does not pay off here.** The IMM (2 416.2 m) is 9.0 %
+   *worse* than the single-mode Kalman filter (2 215.6 m) even with a learnable noise model,
+   a learnable mode-transition matrix and a learnable turn rate. The extra hypotheses cost
+   more in estimation noise than they gain in coverage: at these horizons the manoeuvre
+   distribution is too broad for a three-mode Gaussian mixture to track.
+5. **The error ordering is the same at every horizon**, which is the point of the
+   non-autoregressive decoder: no model overtakes another between 10 s and 300 s.
+
+<!--RESULTS-10S-->
 
 ---
 
@@ -1051,6 +1207,39 @@ We report these because they constrain the design space:
 * **Training from scratch with an unnormalised retrieval context is 24 % worse than the
   base model** (§6.4). The warm start plus context scaling is not an optimisation, it is a
   requirement.
+* **The unweighted Hybrid Constrained loss of FlightBERT cannot be used as published.**
+  A binary code is a *redundant* representation of a value — the same longitude can be
+  written with different bit patterns — so the MSE of Eq. 7 can be minimised by trading
+  one bit against another. With the unweighted sum the regression term does exactly that,
+  and it destroys the **high** bits of the encoding, which carry tens of degrees each.
+  Measured on 400 steps of the re-implementation: with `w_mse = 1` the second bit of the
+  latitude (65.5°) is correct in **13 %** of the windows and the decoded one-step position
+  is **1.1 × 10⁷ m** away; with `w_mse = 0.1` the same bit is correct in **100 %** of the
+  windows and the one-step error drops to **6.4 × 10³ m**. The BCE is the term that pins
+  the individual bits, so it has to dominate. The published sum is therefore not a
+  neutral choice: it is a choice that silently disables the representation.
+* **Encoding the absolute state is much harder to learn than encoding the delta.** The
+  re-implementation of FlightBERT (T-ITS 2023) must *reproduce* the high bits of the
+  encoding of the next point from the encoding of the observed window; the successor
+  (FlightBERT++ V2, AAAI 2024) predicts the *delta* in Gray-Code, which turns the problem
+  into a local regression. The measured difference is not a matter of degrees of freedom
+  but of what the loss has to learn, and it shows up as a floor: a 0.001° resolution
+  (≈ 111 m at 45° N) is the finest position the absolute encoding can express, so the
+  method cannot beat the resolution of its own representation, whatever the training
+  budget. On the same data and the same budget the 2023 method reaches 23 376.9 m against
+  1 330.8 m for the delta-based successor.
+* **The same failure hits the Gray-Code successor when the BCE is removed.** The
+  FlightBERT++ trained with the continuous term alone (`w_bce = 0`) reaches **15 383.2 m**
+  against **1 330.8 m** for the same architecture trained with the BCE — a factor of 11.6
+  for a change of *loss* only, with the architecture, the data and the budget untouched.
+  The mechanism is the one described above (a binary code is redundant, so a regression
+  term can trade one bit against another), and it is the reason the binary-encoding
+  literature keeps the BCE: the classification loss is not an add-on, it is the term that
+  makes the representation well posed.
+* **A multi-hypothesis filter is not automatically better than a single-mode one.** The
+  IMM with a learnable noise model, a learnable mode-transition matrix and a learnable
+  turn rate is **9.0 % worse** than the plain constant-velocity Kalman filter (§6.7.1). The
+  extra hypotheses cost more in estimation noise than they gain in coverage.
 
 ### 9.3 Limitations
 

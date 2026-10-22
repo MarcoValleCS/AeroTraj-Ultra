@@ -1,0 +1,50 @@
+digraph aerotraj {
+  rankdir=TB;
+  splines=spline;
+  nodesep=0.45; ranksep=0.42;
+  ratio=compress; size="9,11";
+  graph [fontname="Helvetica", bgcolor="white", pad=0.3, label="AeroTraj-Ultra - model schematic", labelloc="t", fontsize=18, fontname="Helvetica-Bold"];
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, penwidth=1.3, margin="0.16,0.10"];
+  edge [color="#4a4a4a", arrowsize=0.75, penwidth=1.1, fontname="Helvetica", fontsize=9];
+
+  subgraph cluster_embed {
+    label="Trajectory embedding  -  Gray-Code + ACoAtt-V2";
+    style="dashed"; color="#b9b9b9"; fontname="Helvetica-Bold"; fontsize=13; penwidth=1.1;
+  gc [label=<<B>Gray-Code encoder</B><BR/><FONT POINT-SIZE="9">absolute state -&gt; 85-bit lattice</FONT>>, shape=box, style="rounded,filled", fillcolor="#dae8fc", color="#6c8ebf"];
+  acoat [label=<<B>ACoAtt-V2</B><BR/><FONT POINT-SIZE="9">6 attributes, pairs lon&lt;-&gt;vx, lat&lt;-&gt;vy, alt&lt;-&gt;vz</FONT>>, shape=box, style="rounded,filled", fillcolor="#dae8fc", color="#6c8ebf"];
+  conv [label=<<B>Conv1d stem (k=3)</B><BR/><FONT POINT-SIZE="9">159 -&gt; 144 channels</FONT>>, shape=box, style="rounded,filled", fillcolor="#dae8fc", color="#6c8ebf"];
+  enc [label=<<B>pre-LN Transformer encoder</B><BR/><FONT POINT-SIZE="9">2 layers, 6 heads, d=144</FONT>>, shape=box, style="rounded,filled", fillcolor="#dae8fc", color="#6c8ebf"];
+  }
+  x [label=<<B>x_obs  [B, 12, 9]</B><BR/><FONT POINT-SIZE="9">12 steps = 60 s @ 5 s, or 120 s @ 10 s</FONT>>, shape=box, style="rounded,filled", fillcolor="#fff2cc", color="#d6b656"];
+  pool [label=<<B>attention pooling</B><BR/><FONT POINT-SIZE="9">softmax over the 12 states</FONT>>, shape=box, style="rounded,filled", fillcolor="#dae8fc", color="#6c8ebf"];
+  ctx [label=<<B>context  c</B><BR/><FONT POINT-SIZE="9">one vector per window  [B,144]</FONT>>, shape=box, style="rounded,filled", fillcolor="#d5f5f5", color="#3f9a9a"];
+  dec [label=<<B>non-autoregressive decoder</B><BR/><FONT POINT-SIZE="9">prefix: 55-58 bit Gray-Code deltas -&gt; Conv1d (11 tokens)<BR ALIGN="LEFT"/>queries: horizon embedding + Fourier time + context (H = 13, or 6 at 10 s)</FONT>>, shape=box, style="rounded,filled", fillcolor="#d5e8d4", color="#82b366"];
+  D [label=<<B>decoder features  D</B><BR/><FONT POINT-SIZE="9">[B, H, 144]</FONT>>, shape=box, style="rounded,filled", fillcolor="#d5f5f5", color="#3f9a9a"];
+  prior [label=<<B>physics kinematic prior</B><BR/><FONT POINT-SIZE="9">damped coordinated turn + damped vertical rate<BR ALIGN="LEFT"/>only three learned scalars: tau_turn, tau_vz, tau_acc</FONT>>, shape=box, style="rounded,filled", fillcolor="#ffe6cc", color="#d79b00"];
+  P [label=<<B>P  [B, H, 6]</B><BR/><FONT POINT-SIZE="9">parameter-free anchor</FONT>>, shape=box, style="rounded,filled", fillcolor="#ffe6cc", color="#d79b00"];
+  headA [label=<<B>Head A - Gray-Code MBC</B><BR/><FONT POINT-SIZE="9">55 logits -&gt; STE decode -&gt; y_gc</FONT>>, shape=box, style="rounded,filled", fillcolor="#e1d5e7", color="#9673a6"];
+  headB [label=<<B>Head B - continuous residual</B><BR/><FONT POINT-SIZE="9">zero-init output layer -&gt; y_cont = P + delta</FONT>>, shape=box, style="rounded,filled", fillcolor="#e1d5e7", color="#9673a6"];
+  headC [label=<<B>Head C - MAF-Net trust region</B><BR/><FONT POINT-SIZE="9">y = y_cont + alpha (*) tanh((y_gc - y_cont)/sigma_h) (*) sigma_h</FONT>>, shape=box, style="rounded,filled", fillcolor="#e1d5e7", color="#9673a6"];
+  yhat [label=<<B>prediction  y  [B, H, 6]</B><BR/><FONT POINT-SIZE="9">compared with the truth in ECEF coordinates -&gt; 3-D MDE</FONT>>, shape=box, style="rounded,filled", fillcolor="#f8cecc", color="#b85450"];
+  x -> gc [];
+  gc -> acoat [label="85 bits"];
+  acoat -> conv [];
+  conv -> enc [];
+  enc -> pool [];
+  pool -> ctx [];
+  ctx -> dec [label="conditioning"];
+  dec -> D [];
+  x -> prior [label="x_obs", style=dashed, color="#d79b00"];
+  prior -> P [];
+  D -> headA [];
+  D -> headB [];
+  P -> headB [label="anchor", style=dashed, color="#d79b00"];
+  headA -> headC [label="y_gc", color="#9673a6"];
+  headB -> headC [label="y_cont", color="#9673a6"];
+  headC -> yhat [];
+  {rank=same; x; gc;}
+  {rank=same; prior; dec;}
+  {rank=same; P; D;}
+  {rank=same; headA; headB;}
+  {rank=same; headC; yhat;}
+}

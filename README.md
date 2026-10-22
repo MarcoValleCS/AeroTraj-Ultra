@@ -21,7 +21,9 @@ results. Formal spec: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Lab notebo
 | **Model** | `AeroTrajUltra`, 1 276 839 parameters, ~0.6 GFLOP/step |
 | **Hardware** | 1× RTX 4070 (12 GB) — 150-epoch run on 365 days in **42 min** |
 | **Result** | **991.6 m** 3-D ECEF mean distance error (5 s–300 s) — best of 10 compared models, 90-day run |
-| **Best (365 days)** | **847.3 m** on the March split and **926.0 m** on the Nov–Dec split — **−14.5 %** vs the same model trained on 90 days, *apples-to-apples on the same test set* |
+| **Best (365 days)** | **790.2 m** on the March split and **865.1 m** on the Nov–Dec split — **−20.1 %** vs the same model trained on 90 days, *apples-to-apples on the same test set* |
+| **Window study** | 12 points are 60 s at a 5 s step or **120 s at 10 s**: the long window wins **−7.3 % at 300 s** and loses **+5.5 % at 10 s** — the crossover is at 60 s (§4.6) |
+| **Literature, re-implemented** | on the same 365 days and the same 10 s grid, with the same budget: ours **1 256 m** vs FlightBERT++ (AAAI 2024) **1 331 m**, BiLSTM 1 801 m, Kalman filter 2 216 m, LSTM 2 358 m — **−5.6 %** vs the best literature model, **−43 %** vs the best classical filter (§4.8) |
 | **Speed** | 1 aircraft end-to-end in **19.3–20.7 ms**, or **2.8–6.5 ms** with `torch.compile` (3–7×, verified MDE-neutral) · **67 600–73 300 aircraft/s** at batch 4096 · latency flat in the horizon (1.17× for 13 horizons) |
 | **Code** | `model.py` (architecture) · `run.py` (training) · `bench_models.py` (literature replications) |
 | **Uncertainty** | multi-hypothesis head (K=8) + conformal calibration → certified 90 % band with a 56 % smaller radius |
@@ -222,6 +224,13 @@ which sample is correct and is therefore **not** an operational metric.
 
 * **The model is best at every horizon of the grid**, by 18.7 % over FlightBERT++ V2 and 34.2 %
   over the strongest kinematic baseline.
+
+![Six real held-out windows, one per manoeuvre type: inputs, ground truth and the three strongest models in a local metric frame](docs/figures/trajectory_cases.png)
+
+*Figure: qualitative view on six held-out windows, one per manoeuvre type, selected
+deterministically from the ground-truth future (en-route only, mutually exclusive). All
+axes are in metres in a local frame anchored at the last observed position, so each panel
+is a geometrically honest view of the manoeuvre. Reproduce with `plot_trajectory_cases.py`.*
 * **CFM beats DDPM by 60 %** (single draw) and **44 % in minADE@10**, reproducing the
   head-to-head claim of FlowATC on an independent dataset.
 * **The oracle best-of-10 of CFM (983.5 m) matches the deterministic model (991.6 m)** — the
@@ -398,18 +407,21 @@ same 90-day dataset, same chronological splits, same horizon grid (extended from
 
 **The 365-day run.** Same architecture, same 5 s → 300 s grid, same recipe, but trained on
 **365 consecutive days** (293/36/36) instead of 90: **438 215 unique flights** and 306.8 M
-5-second points, i.e. **4.5× the flights** of the 90-day dataset. 150 epochs with
-`torch.compile`, 15.8 s/epoch (**42 min** total), best checkpoint at epoch 146
-(val MDE 952.3 m).
+5-second points, i.e. **4.5× the flights** of the 90-day dataset.
 
-The decisive comparison is *apples-to-apples on the same test set*, because the two runs have
-different test splits. Each checkpoint is therefore evaluated on **both** splits
+Two *budgets* were trained on it, because the 400k-samples/epoch run never triggered early
+stopping (its validation error was still falling at epoch 150, best checkpoint at 146): the
+second triples the samples per epoch (1.2M → 180 M samples over 150 epochs, 586 steps/epoch,
+**~2 h** with `torch.compile`; best checkpoint at epoch 137, val MDE 889.4 m).
+
+The decisive comparison is *apples-to-apples on the same test set*, because the runs have
+different test splits. Every checkpoint is therefore evaluated on **both** splits
 (`eval_cross.py`, 60 000 windows each):
 
-| test split | 90-day model | **365-day model** | Δ |
-|---|---:|---:|---:|
-| March 2022 (2022-03-23 → 03-31) | 991.6 m | **847.3 m** | **−14.55 %** |
-| Nov–Dec 2022 (2022-11-26 → 12-31) | 1 082.8 m | **926.0 m** | **−14.48 %** |
+| test split | 90-day model | 365 d @ 400k | **365 d @ 1.2M** | Δ vs 90 d |
+|---|---:|---:|---:|---:|
+| March 2022 (2022-03-23 → 03-31) | 991.6 m | 847.3 m | **790.2 m** | **−20.31 %** |
+| Nov–Dec 2022 (2022-11-26 → 12-31) | 1 082.8 m | 926.0 m | **865.1 m** | **−20.10 %** |
 
 **Findings.**
 
@@ -426,6 +438,11 @@ different test splits. Each checkpoint is therefore evaluated on **both** splits
   5 s. The winter period is genuinely harder where intent matters, so a single test split
   understates or overstates a model depending on its season. Cross-split evaluation should
   be the default, not an extra.
+* **Tripling the optimisation budget is worth −6.7 %** (847.3 → 790.2 m on March, 926.0 →
+  865.1 m on Nov–Dec: −6.7 % and −6.6 %, i.e. the same on both test sets). Per horizon, from
+  5 s to 300 s: 57.2 → 54.4 m and 3 640.9 → 3 374.2 m. The gain is again monotone in the
+  horizon, and the validation curve saturated at epoch 137 — 150 epochs at 1.2M is a
+  well-calibrated budget rather than a truncated one.
 
 **Earlier data-scaling runs** (for reference; different horizon grid in the right column):
 
@@ -440,7 +457,115 @@ different test splits. Each checkpoint is therefore evaluated on **both** splits
 days cut the error on the **same 5 s → 600 s grid by 8.9 %** (3 019.5 → 2 751.0 m), while
 doubling again to 180 days gained only **1.8 %**.
 
-### 4.6 Where the remaining error comes from
+### 4.6 How long should the observation window be? (60 s vs 120 s)
+
+The model reads **12 points**; whether those are 60 s (at 5 s) or **120 s** (at 10 s) is a
+design choice, and the report's own error analysis says where it should matter: above ~30 s
+the residual error is *intent*, not sensor noise, so a window that covers twice as much of the
+trajectory should pay off there and only there. The coarse grid also *costs* something —
+doubling the step halves the kinematic detail.
+
+`config_365d_10s.json` is exactly that experiment: same 365 days, same recipe, same budget
+(150 epochs × 1.2M samples), 12 input points but a 10 s step, and **6 horizons**
+(10, 30, 60, 90, 180, 300 s) — every one of which also exists in the 5 s grid, so the
+comparison is per horizon on the same test days.
+
+| horizon | 5 s grid (60 s of history) | **10 s grid (120 s of history)** | Δ |
+|---:|---:|---:|---:|
+| 10 s | 57.2 m | 60.4 m | **+5.5 %** |
+| 30 s | 105.9 m | 108.4 m | **+2.3 %** |
+| 60 s | 275.6 m | 273.0 m | −0.9 % |
+| 90 s | 533.1 m | 517.1 m | **−3.0 %** |
+| 180 s | 1 631.5 m | 1 550.2 m | **−5.0 %** |
+| 300 s | 3 640.9 m | 3 374.2 m | **−7.3 %** |
+
+**Mean over the shared horizons: −5.8 %** in favour of the longer window.
+
+**Findings.**
+
+* The sign **changes at ~60 s**, monotonically: the coarse grid *loses* below 30 s (where
+  kinematic detail is what is being measured) and *wins* above 90 s, by more and more
+  (−3.0 % → −7.3 %). That is the predicted signature of a window that buys information about
+  intent, not of a sampling artefact.
+* The crossover at 60 s is the same threshold the error-floor analysis found independently
+  (§4.8): the 5–30 s band is saturated by CPR quantisation of the position, so nothing can be
+  gained there, and above it the manoeuvre is what is unknown.
+* **The two configurations are therefore complementary, not competing**: a fine grid for the
+  short horizons and a long history for the long ones. The natural follow-ups are a 24-point
+  window at 5 s (same resolution, double history — this isolates the two effects) and a
+  two-scale input (the fine 60 s window plus a coarse channel covering the 120 s before it).
+* The absolute *mean* of the two runs is **not** comparable (980.5 m over 6 horizons vs 865.1 m
+  over 13): the coarse grid has no 5–20 s points, which are the easy ones. Only the per-horizon
+  columns above mean anything.
+
+### 4.7 The literature re-implemented on the same data (365 days, 10 s grid)
+
+The benchmark of §4.1 is the *historical* one: it was run before the data-scaling study and
+before the coarse grid existed, so it cannot answer the two questions that now matter.
+(i) How do the published methods compare when every one of them is trained on the **same
+365 days**? (ii) Does the ranking change when the model reads **120 s of history** instead
+of 60 s? Five methods were re-implemented from scratch (`bench_baselines.py`) and trained
+with an identical budget (`bench_run_10s.py`).
+
+**What was re-implemented.** A constant-velocity **Kalman filter** with a real 6-D Joseph-form
+update and a *learnable* noise model; an **IMM** (constant velocity / constant acceleration /
+coordinated turn) with per-mode filters, the Gaussian-mixture mode update and the standard
+interaction step, also with a learnable noise model and mode probabilities; the **LSTM** and
+**BiLSTM** multi-horizon regressors of the FlightBERT paper; and the **FlightBERT++** of the
+AAAI 2024 paper with its Gray-Code delta encoding, its ACoAtt attribute-correlation module
+and its non-autoregressive multi-horizon decoder.
+
+**Why the classical filters are trained.** A Kalman filter has a handful of parameters
+(process noise, measurement noise, mode probabilities). Fixing them by hand would handicap
+the comparison for a reason that has nothing to do with the methods: a published KF baseline
+is tuned on a validation set while the neural baselines get millions of gradient steps.
+Making the noise model learnable puts every row under the same protocol — same data, same
+optimiser, same number of samples — so the difference measured is the difference between the
+*estimators*.
+
+**Protocol.** 365 days decimated to a 10 s step: 12 observed points (120 s of history),
+horizons 10/30/60/90/180/300 s, test split 36 days (Nov–Dec 2022), 60 000 windows, 3-D ECEF
+error, **25 epochs × 400 000 samples = 10M windows per model** for everybody, `torch.compile`
+off.
+
+| model | MDE [m] | 10 s | 30 s | 60 s | 90 s | 180 s | 300 s |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **AeroTraj-Ultra (ours)** | **1 256.0** | **65.0** | **123.8** | **326.2** | **631.5** | **1 971.7** | **4 418.0** |
+| FlightBERT++ V2 (AAAI 2024), faithful | 1 330.8 | 73.7 | 151.7 | 377.4 | 703.9 | 2 115.5 | 4 562.9 |
+| FlightBERT++ V2, without ACoAtt | 1 465.1 | 76.7 | 162.3 | 406.0 | 758.0 | 2 305.3 | 5 082.0 |
+| BiLSTM regression | 1 801.3 | 101.5 | 251.9 | 584.9 | 1 028.1 | 2 838.4 | 6 002.8 |
+| Kalman filter (CV, learnable noise) | 2 215.6 | 111.8 | 292.9 | 688.8 | 1 210.8 | 3 421.3 | 7 568.3 |
+| LSTM regression | 2 358.3 | 160.7 | 442.1 | 953.5 | 1 551.4 | 3 738.1 | 7 304.1 |
+| IMM (CV/CA/CT, learnable noise) | 2 416.2 | 147.6 | 391.8 | 861.7 | 1 438.8 | 3 744.2 | 7 913.0 |
+| CV least-squares (no learning) | 2 624.0 | 154.4 | 422.9 | 942.2 | 1 577.8 | 4 084.0 | 8 562.7 |
+| *AeroTraj-Ultra, full budget (180M windows)* | *980.5* | *60* | *108* | *273* | *517* | *1 550* | *3 374* |
+
+![MAE and RMSE per attribute for every method and every prediction step, in the format of the FlightBERT paper](docs/figures/bench_10s_mae_rmse.png)
+
+**Figure 4.1** — The per-attribute MAE and RMSE of every method at every prediction step, in
+the format of Table I of the FlightBERT paper. Regenerate with `make_table_mae_rmse.py`.
+
+**Findings.**
+
+1. **Ours wins the same-budget comparison**: −5.6 % against the best literature model and
+   −43.3 % against the best classical filter, and it is the only model better than the
+   Kalman filter at *every* horizon.
+2. **The attribute-correlation attention is worth −9.2 %** on the same architecture, which
+   reproduces the ablation of §4.2 on a different dataset and grid.
+3. **The deep-regression baselines do not beat the classical filter**: the LSTM is 6.4 %
+   *worse* than the Kalman filter with a learned noise model. The BiLSTM is much better than
+   the LSTM (−23.6 %) but still 19 % behind the filter.
+4. **The multi-hypothesis filter does not pay off**: the IMM is 9.0 % worse than the
+   single-mode Kalman filter, and its coordinated-turn mode saturates its own turn-rate
+   bound — the sign of an overfitted mode.
+5. **The binary-encoding literature needs its BCE.** The FlightBERT++ trained with the
+   continuous term alone is **11.6× worse** (15 383 m) than the same architecture with the
+   BCE (1 331 m): a binary code is redundant, so a regression term can trade one bit against
+   another and destroy the high bits, which carry the coarse position. The 2023 version of
+   FlightBERT, whose multi-horizon prediction comes from an autoregressive roll-out, does
+   not survive its own protocol on this data at all (23 377 m) — see §9 of the paper.
+
+### 4.8 Where the remaining error comes from
 
 Measured on the held-out set:
 
@@ -452,7 +577,7 @@ Measured on the held-out set:
   dominated by the unknown intent (turn left / right / continue), which is *epistemic* and is
   exactly what the generative models capture with their best-of-K spread.
 
-### 4.7 Training efficiency
+### 4.9 Training efficiency
 
 The model is **launch-bound**, not compute-bound (1.28 M parameters, 144-dim, ~600 kernel
 launches per forward). Three exact optimisations plus `torch.compile` give a **1.9×** speed-up:
@@ -466,7 +591,7 @@ launches per forward). Three exact optimisations plus `torch.compile` give a **1
 The Gray-Code reformulation is verified equivalent to machine precision (2e-16) on both values
 and gradients. Measured with `profile_training.py`.
 
-### 4.8 Inference speed
+### 4.10 Inference speed
 
 Accuracy is useless in ATM if the prediction is not ready before the update cycle closes, so
 every model of the benchmark was timed on the same harness (`bench_latency.py`). The
@@ -493,7 +618,7 @@ after `cuda.synchronize()`, plus a per-call CUDA-event measurement of the GPU-bu
   batch 1 is 19,591 µs but the *marginal* cost of one more aircraft is **12.6 µs**: **99.94 %**
   of the single-aircraft latency is fixed per-call overhead. Confirmed twice over: batching
   improves the per-aircraft cost by **>1000×**, and `torch.compile` takes batch 1 to
-  2.8–6.5 ms (3–7×) with no change in the metric (§4.9).
+  2.8–6.5 ms (3–7×) with no change in the metric (§4.10).
 * **Latency is flat in the horizon.** 13 horizons spanning 5–300 s cost **1.17×** a single
   horizon (`bench_latency_horizon.py`). Autoregressive models pay per step, which is exactly
   why CFM (20 steps) and DDPM (50 steps) are 4.7× and 13× slower here.
@@ -504,7 +629,7 @@ after `cuda.synchronize()`, plus a per-call CUDA-event measurement of the GPU-bu
   forward pass**, 70 % of the pipeline). Fleet-scale inference needs an indexed or
   approximate search.
 
-### 4.9 Inference optimisations (quality-verified)
+### 4.11 Inference optimisations (quality-verified)
 
 Three changes were adopted, each after checking on 24,576 test windows that the 3-D ECEF
 error does not move:
@@ -534,55 +659,110 @@ default. Full detail in [`docs/PAPER.md`](docs/PAPER.md) §8.6.
 ## 5. Repository layout
 
 ```
-├── model.py                 AeroTraj-Ultra architecture + baselines + hybrid loss
-├── run.py                   training loop, evaluation, benchmark, plots
-├── dataloader.py            vectorised sliding-window loader (memory-mapped, low RAM)
-├── data_pipeline.py         OpenSky acquisition + preprocessing (parallel, resumable)
-├── bench_models.py          the 5 re-implemented literature models
-├── bench_run.py             benchmark harness (train + evaluate + compare)
-├── bench_experiments.py     post-hoc analyses (ensembles, MC-dropout, error floor)
-├── bench_latency.py         inference latency + throughput benchmark (CUDA events)
-├── bench_latency_opt.py     latency after the optimisations (eager vs compiled)
-├── bench_latency_horizon.py latency vs number of horizons (non-autoregressive check)
-├── bench_opt.py             inference-variant matrix (no_grad / inference_mode / compile)
-├── bench_retrieval.py       retrieval search: blocked vs single-shot
-├── bench_retrieval_block.py retrieval: query block, fp16, pruned pool
-├── bench_retrieval_grid.py  retrieval: the two blocking dimensions interact
-├── check_compile_quality.py does torch.compile change the metric? (24 576 windows)
-├── check_pool_quality.py    does the pruned pool change the metric?
-├── eval_cross.py            cross-test-set evaluation (isolates the data effect)
-├── inference.py             FastPredictor: compiled + inference_mode inference path
-├── plot_pareto.py           accuracy-versus-latency Pareto figure
-├── plot_architecture.py     architecture overview figure
-├── calibrate_uncertainty.py conformal calibration of the multi-hypothesis ensemble
-├── retrieval.py             retrieval engine (key, value, GPU top-k, leakage control)
-├── run_retrieval.py         training of the retrieval-conditioned variant
-├── retrieval_probe.py       decisive probe: does the retrieval prior carry signal?
-├── retrieval_diagnostic.py  descriptor sweep + oracle ceiling of the retrieval
-├── legacy_flightprev.py     FlightPREV (previous model) re-implemented on OpenSky
-├── run_legacy.py            training/evaluation of the legacy model, same protocol
-├── make_benchmark_report.py unified 12-model table on the same test split
-├── eval_ckpt.py             evaluate any checkpoint on any split
-├── make_report.py           markdown/CSV report generator
-├── profile_training.py      step-level A/B profiler
-├── verify_all.py            end-to-end state verification
-├── predict.py               standalone inference
-├── config.json               run a 40 giorni (CPU, legacy)
-├── config_90d.json           run a 90 giorni, orizzonte 5-600 s
-├── config_90d_300s.json      run a 90 giorni, orizzonte 5-300 s (benchmark)
-├── config_90d_300s_hyp.json  the same + multi-hypothesis head (K=8)
-├── config_180d.json          run a 180 giorni, orizzonte 5-180 s
-├── config_40d_gpu.json       run di CONTROLLO a 40 giorni con identico budget GPU
-├── config_90d_180s.json      CONTROLLO a 90 giorni con orizzonte 180 s
-├── requirements.txt          environment verificato (numpy/matplotlib/triton pitfall)
-├── docs/
-│   ├── PAPER.md              the technical report (paper-style, all the evidence)
-│   ├── ARCHITECTURE.md       formal specification of the model
-│   ├── EXPERIMENTS.md        full experimental log (chronological, every run)
-│   └── figures/              figures embedded by PAPER.md and README.md (png)
-├── results*/                 reports, metrics and CSVs of every run (text: committed)
-└── checkpoints*/             trained weights
+model and training
+  model.py                  AeroTraj-Ultra architecture + baselines + hybrid loss
+  config_utils.py           horizon grid <-> time step (the dt parameterisation)
+  run.py                    training loop, evaluation, benchmark, plots
+  dataloader.py             vectorised sliding-window loader (memory-mapped, low RAM)
+  data_pipeline.py          OpenSky acquisition + preprocessing (parallel, resumable)
+  inference.py              FastPredictor: compiled + inference_mode inference path
+  predict.py                standalone inference on pre-processed windows
+  eval_ckpt.py              evaluate any checkpoint on any split
+  eval_cross.py             cross-test-set evaluation (isolates the data effect)
+
+benchmarks and analysis
+  bench_models.py           the 5 re-implemented literature models
+  bench_baselines.py        the re-implementations for the 10 s benchmark: the
+                             Kalman filter, the IMM, the BiLSTM, FlightBERT
+                             (T-ITS 2023) and FlightBERT++ (AAAI 2024, with ACoAtt)
+  bench_run.py              benchmark harness (train + evaluate + compare)
+  bench_run_10s.py          the same harness on the 365-day / 10 s grid, with
+                            the per-model evaluation saved incrementally
+  bench_experiments.py      post-hoc analyses (ensembles, MC-dropout, error floor)
+  bench_opt.py              inference-variant matrix (no_grad / inference_mode / compile)
+  bench_latency.py          inference latency + throughput (CUDA events)
+  bench_latency_opt.py      latency after the optimisations (eager vs compiled)
+  bench_latency_horizon.py  latency vs number of horizons (non-autoregressive check)
+  bench_retrieval.py        retrieval search: blocked vs single-shot
+  bench_retrieval_block.py  retrieval: query block, fp16, pruned pool
+  bench_retrieval_grid.py   retrieval: the two blocking dimensions interact
+  check_compile_quality.py  does torch.compile change the metric? (24 576 windows)
+  check_pool_quality.py     does the pruned pool change the metric?
+  test_codec_10s.py         unit test of the Gray-Code lattices on the 10 s grid
+  test_baselines.py         unit tests of the re-implementations
+  test_loss_balance.py      the BCE/MSE balance of the Hybrid Constrained loss
+  check_docs.py             consistency check of the documentation
+  make_benchmark_report.py  unified 12-model table on the same test split
+  make_bench_10s_report.py  the tables of the 365-day / 10 s benchmark
+  make_table_mae_rmse.py    the MAE/RMSE per attribute, in the FlightBERT format
+  make_report.py            markdown/CSV report generator
+  profile_training.py       step-level A/B profiler
+  verify_all.py             end-to-end state verification
+
+retrieval and uncertainty
+  retrieval.py              retrieval engine (key, value, GPU top-k, leakage control)
+  run_retrieval.py          training of the retrieval-conditioned variant
+  retrieval_probe.py        decisive probe: does the retrieval prior carry signal?
+  retrieval_diagnostic.py   descriptor sweep + oracle ceiling of the retrieval
+  calibrate_uncertainty.py  conformal calibration of the multi-hypothesis ensemble
+
+the previous model, and the 10 s dataset
+  legacy_flightprev.py      FlightPREV (previous model) re-implemented on OpenSky
+  run_legacy.py             training/evaluation of the legacy model, same protocol
+  build_10s_dataset.py      derive a coarser grid by decimating in time (no re-download)
+  verify_10s.py             grid verification before spending GPU hours
+  recover_1200k_history.py  rebuild a run's history from its log
+  recover_noise_models.py   rebuild the learned noise of the filters from the weights
+
+figures  (see docs/figures/README.md for the three implementations)
+  plot_architecture.py      model schematic (matplotlib)
+  plot_loss.py              hybrid-objective schematic (matplotlib)
+  plot_acoat_block.py       ACoAtt-V2 block schematic
+  plot_trajectory_cases.py  six-case 3-D comparison (Plotly + Kaleido)
+  plot_pareto.py            accuracy-versus-latency Pareto figure
+  plot_bench_10s.py         the comparison sheets of the 10 s benchmark
+  plot_style.py             the shared design system for the schematics
+  plot_model_dot.py         the model schematic as DOT text, laid out by Graphviz
+
+configurations
+  config_90d_300s.json      90 days, 5 s step, horizons 5-300 s (the benchmark)
+  config_90d_300s_hyp.json  the same + the multi-hypothesis head (K=8)
+  config_90d.json           90 days, horizons 5-600 s
+  config_180d.json          180 days, horizons 5-180 s
+  config_365d.json          365 days, horizons 5-300 s
+  config_365d_1200k.json    the same, 1.2M samples/epoch instead of 400k
+  config_365d_10s.json      365 days, 10 s step, 12 points = 120 s, horizons 10-300 s
+  config_365d_10s_bench.json  the same + the benchmark budget (25 x 400k)
+
+one-shot runners
+  run_365d_chain.ps1        wait for the dataset build -> measure -> train
+  run_365d_1200k_chain.ps1  wait for the GPU -> train the 1.2M budget
+
+  requirements.txt          the verified environment (numpy/matplotlib/triton pitfalls)
+  docs/
+    PAPER.md                the technical report (paper-style, all the evidence)
+    ARCHITECTURE.md         formal specification of the model
+    EXPERIMENTS.md          full experimental log (chronological, every run)
+    figures/                the figures, their sources and how to rebuild them
+  results*/                 reports, metrics and CSVs of every run (text: committed)
+  checkpoints*/             trained weights (not committed)
 ```
+
+> **Trained weights kept locally** (all gitignored): `checkpoints_bench/` (the 10-model
+> benchmark, loaded by the latency and trajectory figures), `checkpoints_hyp/` and
+> `checkpoints_hyp_reg/` (multi-hypothesis and retrieval, backing the uncertainty and
+> retrieval results), `checkpoints_365/` and `checkpoints_365_1200k/` (the two training
+> budgets compared in §4.5), `checkpoints_365_10s/` (the window study of §4.6) and
+> `checkpoints_bench_10s/` (the literature baselines of §4.7). The 40/90/180-day
+> checkpoints were removed once their numbers were recorded: the runs can be reproduced
+> from their configurations, which are kept.
+>
+> **Datasets kept locally** (gitignored, rebuilt by `data_pipeline.py`): `data365/` (20.6 GB,
+> the 5 s grid) and `data365_10s/` (5.2 GB, the 10 s grid). The 40/90/180-day datasets were
+> removed after their results had been recorded: the 90-day one was the test set of the
+> first benchmark (whose table is in `results_bench/`), the 180-day one the intermediate
+> point of the data-scaling study; both can be rebuilt with `python data_pipeline.py
+> --config <config>`, which downloads the raw OpenSky days again.
 
 > **Read first:** [`docs/PAPER.md`](docs/PAPER.md) is the self-contained technical report
 > (abstract, method, experiments, ablations, uncertainty calibration, inference latency,
@@ -610,8 +790,16 @@ python run.py --config config_90d.json --fresh
 python bench_run.py --config config_90d_300s.json --compile reduce-overhead
 
 # 4) evaluate any checkpoint on any split
-python eval_ckpt.py --checkpoint checkpoints90/aerotraj_ultra_best.pt \
-                    --eval-config config_90d.json --split test
+python eval_ckpt.py --checkpoint checkpoints_365_1200k/aerotraj_ultra_best.pt \
+                    --eval-config config_365d_1200k.json --split test
+
+# 5) the 365-day study, the 1.2M budget and the 120 s-window experiment
+python run.py --config config_365d.json --fresh --skip-baselines --compile reduce-overhead
+python run.py --config config_365d_1200k.json --fresh --skip-baselines --compile reduce-overhead
+python build_10s_dataset.py --src data365 --dst data365_10s --factor 2 --config config_365d_10s.json
+python verify_10s.py --config config_365d_10s.json        # grid + lattice check, aborts on failure
+python run.py --config config_365d_10s.json --fresh --skip-baselines --compile reduce-overhead
+python eval_cross.py --model "365d-1.2M=config_365d_1200k.json=checkpoints_365_1200k/aerotraj_ultra_best.pt"
 ```
 
 Useful flags: `--device`, `--fresh`, `--epochs`, `--batch-size`, `--max-train-per-epoch`,

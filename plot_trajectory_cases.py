@@ -242,7 +242,12 @@ def main() -> None:
         mcfg = json.load(open(mcfg_path, encoding="utf-8"))
         ck = torch.load(ckpt, map_location=dev, weights_only=False)
         sd = normalize_state_dict(ck.get("model_state_dict", ck))
-        if "lstm" in ckpt.lower():
+        if "bilstm" in ckpt.lower():
+            from bench_baselines import BiLSTMRegressionBaseline
+            m = BiLSTMRegressionBaseline(horizon=len(ds.horizon_seconds),
+                                         horizon_seconds=list(ds.horizon_seconds),
+                                         norm_mean=ds.norm_mean, norm_std=ds.norm_std).to(dev).eval()
+        elif "lstm" in ckpt.lower():
             m = LSTMRegressionBaseline(horizon=len(ds.horizon_seconds),
                                        horizon_seconds=list(ds.horizon_seconds),
                                        norm_mean=ds.norm_mean, norm_std=ds.norm_std).to(dev).eval()

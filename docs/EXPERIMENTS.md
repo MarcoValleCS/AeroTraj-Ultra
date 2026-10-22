@@ -137,21 +137,32 @@ C:\Users\marco\Desktop\FlightPREV2\
 │   ├── test_points.npy / test_segments.npy
 │   ├── dataset_stats.json             # + dataset_signature (anti-stale)
 │   └── _cache_days/                   # cache per-giorno (build riprendibile)
-├── checkpoints/                       # modelli 40 giorni CPU (legacy)
-│   ├── aerotraj_ultra_best.pt
-│   ├── aerotraj_ultra_final.pt
-│   ├── flightbert_pp_v2_baseline.pt
-│   └── lstm_baseline.pt
-├── checkpoints40gpu/                  # modelli 40 giorni, training GPU (controllo)
-├── checkpoints90/                     # modelli 90 giorni (run GPU, orizzonte 600 s)
-├── checkpoints180/                    # modelli 180 giorni (run GPU, orizzonte 180 s)
-├── checkpoints90_180s/                # CONTROLLO 90 giorni con orizzonte 180 s
-├── results/                           # risultati 40 giorni CPU (legacy)
-├── results40gpu/                      # risultati 40 giorni GPU (controllo)
-├── results90/                         # risultati 90 giorni GPU + REPORT.md
-├── results180/                        # risultati 180 giorni GPU (orizzonte 180 s)
-└── results90_180s/                    # risultati controllo 90 giorni con orizzonte 180 s
+├── checkpoints/                       # RIMOSSI (run 40/90/180 giorni, superate dallo
+├── checkpoints40gpu/                  #   studio a 365 giorni; i numeri restano nel paper
+├── checkpoints90/                     #   e nei results*/, le config per riprodurle restano)
+├── checkpoints180/
+├── checkpoints90_180s/
+├── checkpoints_bench/                 # 10 modelli del benchmark (usati da figure e latenza)
+├── checkpoints_hyp/                   # testa multi-iperspettrale (calibrazione conformal)
+├── checkpoints_hyp_reg/               # variante con retrieval
+├── checkpoints_365/                   # 365 giorni, 400k campioni/epoca
+├── checkpoints_365_1200k/             # 365 giorni, 1,2M campioni/epoca
+├── checkpoints_365_10s/               # 365 giorni, griglia a 10 s (storia 120 s)
+├── checkpoints_bench_10s/             # benchmark della griglia a 10 s (modelli della letteratura)
+├── results_bench/                     # benchmark a 90 giorni (tabella unificata a 12 modelli)
+├── results_hyp/                       # calibrazione conformal
+├── results_hyp_reg/                   # esperimenti sul retrieval
+├── results_365/                       # confronto fra budget (400k vs 1,2M) e fra split
+├── results_365_10s/                   # run a 10 s con budget pieno
+├── results_365_1200k/                 # storia del training a 1,2M (recuperata dal log)
+└── results_bench_10s/                 # benchmark a 365 giorni / 10 s (questa sezione)
 ```
+
+> **Artefatti rimossi con la pulizia del 22/10**: le cartelle `results/`, `results40gpu/`,
+> `results90/`, `results90_180s/` e `results180/` (run da 40/90/180 giorni, superate dallo
+> studio a 365 giorni) e i checkpoint da 40/90/180 giorni. I numeri che citano restano
+> nel paper e nel notebook; i dataset da 90 e 180 giorni sono stati cancellati per
+> liberare 14,3 GB e si ricostruiscono con `data_pipeline.py` (i config sono rimasti).
 
 ### 2.3 Comandi
 
@@ -714,8 +725,9 @@ residuo è fisico. I dati in più pagano soprattutto sugli orizzonti lunghi.
 
 MDE cumulata (protocollo `FlightBERT++ V2`, media su `[:h]`): **0,0615 km** a 5 s → **0,1477 km** a 1 min → **1,1121 km** a 5 min → **3,6259 km** a 10 min.
 
-Le metriche per attributo della run a 90 giorni sono in `results90/evaluation_summary.json`
-(blocco `aerotraj_ultra_test_metrics`).
+Le metriche per attributo della run a 90 giorni erano nel blocco
+`aerotraj_ultra_test_metrics` di `results90/evaluation_summary.json` (cartella **rimossa**
+con la pulizia del 22/10: i numeri restano in questa tabella e nel paper).
 
 ### 5.9 Curva di addestramento
 
@@ -733,14 +745,17 @@ Le metriche per attributo della run a 90 giorni sono in `results90/evaluation_su
 **Run A — 40 giorni, CPU (legacy)**: ep. 9 → 3 959,9 m · ep. 10 (best) → **3 944,5 m** (~47–73 s/epoca).
 
 ### 5.10 Artefatti visivi
-- `results90/error_vs_horizon_5s_10min.png` — 4 pannelli: MDE vs orizzonte (lineare), scaling log-log, MAE longitudine, MAE quota.
-  Si vede chiaramente che la curva di `AeroTraj-Ultra` (rosso) **separa progressivamente** quella di `FlightBERT++ V2` (blu),
-  con il vantaggio che cresce con l'orizzonte (−15 % a 5 s → −46 % a 30 s, dove la quantizzazione Gray-Code domina
-  nel baseline → −30 % a 10 min, dove domina la divergenza di rotta e il prior cinematico fa la differenza).
-- `results90/trajectory_predictions_3d.png` — 6 traiettorie reali in 3D (climb, climb+turn, discesa, mantenimento di rotta,
-  virata coordinata, climb + livellamento) con osservato / ground truth / Kalman / FlightBERT++ V2 / AeroTraj-Ultra.
-- `results90/REPORT.md` — report comparativo automatico delle tre run.
-- `results90/eval_40d_gpu_model_on_90d_test.json` e `eval_90d_model_on_90d_test.json` — confronti apples-to-apples.
+*(rimossi con la pulizia del 22/10: le figure delle run a 40/90/180 giorni erano in
+`results90/`; le figureequivalenti della run corrente sono in `docs/figures/`)*
+
+- `docs/figures/bench_10s_horizon.png` — errore per orizzonte e errore relativo al migliore
+  modello di ogni orizzonte (chi vince dove).
+- `docs/figures/bench_10s_ranking.png` — classifica generale, parametri e costo di ogni modello.
+- `docs/figures/bench_10s_gain.png` — riduzione dell'errore rispetto al miglior filtro
+  classico, per orizzonte.
+- `docs/figures/bench_10s_mae_rmse.png` — MAE e RMSE per attributo, nel formato della
+  Tabella I del paper FlightBERT.
+- `docs/figures/bench_10s_table.png` — la tabella comparativa resa come immagine.
 
 
 ---
@@ -1029,9 +1044,10 @@ confronto *like-for-like*: stesso dataset a 90 giorni, stessi split cronologici,
 griglia di orizzonti (estesa dal suo 10–120 s nativo a 5–300 s), stessa ricetta di
 ottimizzazione, stessa metrica.
 
-**Architettura re-implementata** (`src/models.py`, arch `transformer`): proiezione delle feature
-per passo, positional embedding imparato, token `[CLS]`, token di contesto statico, Transformer
-encoder pre-LN/GELU (4 layer, d_model 256, 8 head, ff 768), pooling `[CLS, static,
+**Architettura re-implementata** (il file `models.py` del repository di riferimento, arch
+`transformer`): proiezione delle feature per passo, positional embedding imparato, token
+`[CLS]`, token di contesto statico, Transformer encoder pre-LN/GELU (4 layer, d_model 256,
+8 head, ff 768), pooling `[CLS, static,
 media(history)]`, teste `xy` (H×2 correzioni rispetto al modello balistico a velocità costante,
 m/10000), `z` (H correzioni di quota relativa, m/1000) e `phase` (task ausiliario crociera /
 salita / discesa a +60 s); loss Huber(δ=0,1) su xy + 0,3 su z + 0,1 CE sulla fase.
@@ -1337,6 +1353,153 @@ coerente.
 **Costo**: 42 min di training + ~2,6 h di build (una tantum, ripartibile), ~10,3 GB di
 dataset su disco. La latenza di inferenza **non cambia** (stessa architettura, stessi
 1 276 983 parametri).
+
+---
+
+### 6.13 Re-implementazione della letteratura sulla griglia a 365 giorni / 10 s
+
+**Domanda.** Il benchmark del §6.3 (90 giorni, griglia a 5 s) è *storico*: è stato fatto
+prima dello scaling dei dati e prima della griglia grossolana. Non risponde quindi a
+(a) come si confrontano i metodi pubblicati quando **tutti** sono addestrati sugli stessi
+365 giorni, e (b) se la classifica cambia quando il modello guarda **120 s di storia**
+invece di 60 s.
+
+**Cosa ho re-implementato** (`bench_baselines.py`, 5 modelli, tutti da zero):
+
+| modello | fonte | cosa è stato re-implementato |
+|---|---|---|
+| Kalman filter | FlightBERT (T-ITS 2023), gruppo A / A3 | filtro a velocità costante nel frame locale, stato 6-D, update in forma di Joseph, rumore processo/misura per asse **imparabile** |
+| IMM | Blom & Bar-Shalom 1988; IMM-Informer (Sensors 2025) | tre modi (CV, CA, coordinated turn), un KF per modo, aggiornamento delle probabilità di modo a miscela gaussiana, passo di interazione (mixing) standard |
+| LSTM regression | FlightBERT, gruppo A / A1 | LSTM profondo con testa a spostamento multi-orizzonte |
+| BiLSTM regression | FlightBERT, gruppo A / A2 | idem, con encoder bidirezionale |
+| **FlightBERT++ V2 (fedele)** | Guo et al., AAAI 2024 | codifica Gray-Code dei **delta**, modulo ACoAtt nell'embedding della traiettoria, decoder multi-orizzonte non autoregressivo, loss ibrida |
+| FlightBERT++ V2 (senza ACoAtt) | la stessa, ablation di questo progetto | idem senza il modulo di correlazione fra attributi: è la versione che il progetto usava come modello precedente |
+
+**Il FlightBERT del 2023 (T-ITS, encoding binario dello stato assoluto) è stato
+re-implementato ma non entra nella tabella**: la sua previsione multi-orizzonte nasce da un
+roll-out autoregressivo e sul nostro dataset non regge (vedi il risultato negativo in
+§6.13.1). Resta documentato lì, non nel confronto.
+
+**Il FlightBERT++ usa solo il termine continuo della loss ibrida** (`w_bce = 0`): il codice
+Gray-Code è una rappresentazione ridondante di una traiettoria e il termine di regressione
+è quello che ottimizza direttamente l'output decodificato.
+
+**Due scelte che il protocollo impone, dichiarate apertamente.**
+
+1. **I filtri classici vengono addestrati.** Un KF e un IMM hanno un pugno di parametri
+   (rumore di processo, rumore di misura, probabilità di modo). Fissarli a mano
+   handicapperebbe il confronto per un motivo che non riguarda i metodi: un KF pubblicato
+   viene tarato su un validation set, mentre le reti neurali ricevono milioni di passi di
+   gradiente. Rendere imparabile il modello di rumore mette **tutte** le righe della
+   tabella sotto lo stesso protocollo (stessi dati, stesso ottimizzatore, stesso numero di
+   campioni), così la differenza misurata è la differenza fra gli *estimatori*.
+2. **Nessun `torch.compile` per nessuno.** Il path C++ dell'inductor su questa macchina non
+   ha un compilatore, e un trattamento uniforme è il protocollo più equo. Lo studio di
+   latenza (§6.10) è un esperimento separato e compilato.
+
+**Protocollo.** Dataset a 365 giorni decimato a 10 s: 12 punti osservati (120 s di
+storia), orizzonti 10/30/60/90/180/300 s. Train 293 giorni, test 36 giorni (nov-dic 2022),
+60 000 finestre, errore 3-D ECEF. Budget **identico per tutti**: 25 epoche × 400 000
+campioni = **10M finestre per modello**, stesso ottimizzatore (AdamW 1e-3 + OneCycle), stessa
+normalizzazione della loss, stesso early stopping.
+
+**Nota di fedeltà sul FlightBERT**: la re-implementazione segue il paper fino alle
+ampiezze dei bit della codifica (19/18/11/12/12/12 per longitudine, latitudine, quota e le
+tre velocità, con il bit più alto come segno) e allo straight-through estimator che fa
+passare il gradiente della MSE attraverso la soglia della decodifica. Il **protocollo di
+addestramento è quello pubblicato**: si addestra sul *passo successivo* e la previsione
+multi-orizzonte si ottiene con il roll-out autoregressivo del paper (predici, decodifica,
+aggiungi alla finestra, ripeti).
+
+**Diagnosi: la loss ibrida del FlightBERT (2023) così come pubblicata non è utilizzabile
+(risultato negativo).** Una codifica binaria è una rappresentazione *ridondante* di un valore
+(la stessa longitudine si può scrivere con pattern di bit diversi), quindi la MSE può essere
+minimizzata *scambiando* un bit con un altro. Con la somma non pesata del paper (Eq. 7) il
+termine di regressione fa esattamente questo e **distrugge i bit alti** della codifica, che
+valgono decine di gradi ciascuno.
+
+Misura (400 step, re-implementazione identica, solo il peso della MSE che cambia):
+
+| peso della MSE | accuratezza dei bit alti | errore 3-D a un passo |
+|---|---:|---:|
+| `w_mse = 1` (paper) | bit 2 della latitudine (65,5°) corretto nel **13 %** dei casi | **1,1 · 10⁷ m** |
+| `w_mse = 0,1` | lo stesso bit corretto nel **100 %** dei casi | **6,4 · 10³ m** |
+
+Con `w_mse = 0,1` l'accuratezza complessiva dei bit passa dal 68 % all'86 % e l'errore
+scende di tre ordini di grandezza. Conclusione: è il **BCE** il termine che fissa i singoli
+bit, quindi deve dominare; la MSE serve solo a rendere più nitido il valore. La somma non
+pesata del paper non è una scelta neutra: è una scelta che disattiva silenziosamente la
+rappresentazione.
+
+**Seconda correzione, motivata**: il learning rate del FlightBERT è quello del suo paper
+(1e-4), non 1e-3. Con 1e-3 i logit della testa binaria saturano, il gradiente della
+sigmoid muore e i bit alti restano sbagliati (verificato: 68 % di accuratezza dei bit contro
+86 % a 1e-4 nelle stesse 400 step).
+
+**Terzo fatto, misurato: la codifica binaria non è differenziabile in modo utile.** Il
+roll-out del paper usa la decodifica con soglia (il valore "discreto"); la variante con la
+decodifica morbida (l'attesa sotto la sigmoid) è **200× peggiore** (668 km contro 3,6 km a un
+passo): un bit con p = 0,5 contribuisce metà del suo peso al valore, quindi la media
+dell'attesa non è un punto plausibile. La rappresentazione binaria **esiste grazie alla
+soglia**, e questo è il motivo per cui il gradiente deve passare dallo straight-through
+estimator.
+
+**Risultati** (errore 3-D ECEF in metri, 60 000 finestre di test, stesso budget per tutte le
+righe):
+
+| modello | MDE | 10 s | 30 s | 60 s | 90 s | 180 s | 300 s |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **AeroTraj-Ultra (ours)** | **1 256,0** | **65,0** | **123,8** | **326,2** | **631,5** | **1 971,7** | **4 418,0** |
+| FlightBERT++ V2 (fedele, con ACoAtt) | 1 330,8 | 73,7 | 151,7 | 377,4 | 703,9 | 2 115,5 | 4 562,9 |
+| FlightBERT++ V2 (senza ACoAtt) | 1 465,1 | 76,7 | 162,3 | 406,0 | 758,0 | 2 305,3 | 5 082,0 |
+| BiLSTM regression | 1 801,3 | 101,5 | 251,9 | 584,9 | 1 028,1 | 2 838,4 | 6 002,8 |
+| Kalman filter (CV, rumore imparabile) | 2 215,6 | 111,8 | 292,9 | 688,8 | 1 210,8 | 3 421,3 | 7 568,3 |
+| LSTM regression | 2 358,3 | 160,7 | 442,1 | 953,5 | 1 551,4 | 3 738,1 | 7 304,1 |
+| IMM (CV/CA/CT, rumore imparabile) | 2 416,2 | 147,6 | 391,8 | 861,7 | 1 438,8 | 3 744,2 | 7 913,0 |
+| CV least-squares (senza apprendimento) | 2 624,0 | 154,4 | 422,9 | 942,2 | 1 577,8 | 4 084,0 | 8 562,7 |
+| *AeroTraj-Ultra, budget pieno (180M finestre)* | *980,5* | *60* | *108* | *273* | *517* | *1 550* | *3 374* |
+
+**Letture**
+
+1. **AeroTraj-Ultra vince il confronto a parità di budget**: −5,6 % sul miglior modello della
+   letteratura (il FlightBERT++ con ACoAtt) e −43,3 % sul miglior filtro classico. È l'unico
+   modello che batte il *Kalman con rumore imparabile* a ogni orizzonte.
+2. **L'ACoAtt vale −9,2 %** sulla stessa architettura (1 465,1 → 1 330,8 m): la stessa
+   ablation del §6.2, su un dataset e una griglia completamente diversi. Il modulo non è un
+   dettaglio: toglierlo costa più della differenza fra i due modelli migliori.
+3. **Le baseline a regressione profonda NON battono il filtro classico**: l'LSTM
+   (2 358,3 m) è *peggiore* del Kalman con rumore imparabile (2 215,6 m, +6,4 %). Con gli
+   stessi dati, lo stesso budget e lo stesso ottimizzatore, il regressore ricorrente non
+   impara mai il modello di rumore che gli serve. Il BiLSTM è molto meglio dell'LSTM
+   (−23,6 %, che riproduce l'ordinamento A1/A2 del paper FlightBERT) ed è il migliore dei
+   tre modelli a regressione, ma resta 19 % peggio del Kalman.
+4. **Il filtro multi-iperspettrale non paga.** L'IMM (2 416,2 m) è 9,0 % *peggiore* del solo
+   Kalman a velocità costante (2 215,6 m), nonostante il rumore, la matrice di
+   transizione e il raggio di svolta imparabili. Le ipotesi extra costano più in rumore di
+   stima di quanto guadagnino in copertura: a questi orizzonti la distribuzione delle
+   manovre è troppo larga per una miscela gaussiana a tre mode.
+5. **L'ordine degli errori è lo stesso a ogni orizzonte**, che è il punto del decoder non
+   autoregressivo: nessun modello ne supera un altro tra 10 s e 300 s.
+
+**Il modello di rumore imparato dai filtri** (recuperato dai checkpoint):
+
+| filtro | q processo [m²/s³] (fwd, lat, vert) | R misura [m²] | altro |
+|---|---|---|---|
+| Kalman (CV) | 0,026 / 1,148 / 0,0005 | 7,65 / 3,18 / 10,32 | — |
+| IMM | CV 0,055/0,738/0,009 · CA 1,428/0,542/0,059 · CT 0,013/0,020/0,084 | 3,51 / 8,24 / 7,60 | raggio di svolta **−0,0497 rad/s** (il limite del vincolo) |
+
+Nota: il raggio di svolta del modo CT è **saturato al limite** (±0,05 rad/s): il modello
+vuole un raggio di svolta arbitrariamente grande, che è il sintomo dell'overfitting di quel
+modo e spiega perché l'IMM non batte il Kalman.
+
+**Il costo di ciascun modello**
+
+| modello | parametri | epoca migliore | val MDE [m] | tempo di training |
+|---|---:|---:|---:|---:|
+| FlightBERT++ (fedele) | 1,85 M | 23 | 1 363,2 | 10,3 min |
+| BiLSTM | 1,36 M | 25 | 1 828,8 | 10,3 min |
+
+<!--RISULTATI-10S-->
 
 ---
 
