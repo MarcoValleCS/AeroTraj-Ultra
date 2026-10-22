@@ -11,8 +11,8 @@ numbers are NOT directly comparable. Evaluating every checkpoint on the SAME
 (held-out, never-trained-on) split makes the comparison rigorous.
 
 Example:
-    python eval_ckpt.py --checkpoint checkpoints90/aerotraj_ultra_best.pt \
-        --eval-config config_90d.json --split test
+    python eval_ckpt.py --checkpoint checkpoints_365_1200k/aerotraj_ultra_best.pt \
+        --eval-config config_365d_1200k.json --split test
 """
 from __future__ import annotations
 

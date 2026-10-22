@@ -52,3 +52,15 @@ Thumbs.db
 
 # Papers (copyright): not redistributed, see the DOIs in README section 7
 *.pdf
+# ... but the compiled figure PDFs of this repository are part of the deliverable
+!docs/figures/*.pdf
+
+# --- LaTeX build artefacts ----------------------------------------------------
+# The .tex sources and the compiled figure PDFs are kept; these are by-products.
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz

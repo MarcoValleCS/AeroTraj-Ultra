@@ -1,8 +1,11 @@
 # coding=utf-8
 """
-Standalone Inference & Live/Historical pyopensky Prediction Script for AeroTraj-Ultra (FlightBERT++ V3).
-Loads the trained checkpoint `checkpoints/aerotraj_ultra_best.pt` and predicts
-16 future trajectory points from 5 seconds to 10 minutes (600s).
+Standalone inference on pre-processed windows.
+
+Defaults to the best available checkpoint (the 365-day run at 1.2M samples per
+epoch); any checkpoint can be passed explicitly.  It predicts the whole horizon
+vector in one pass: 13 points from 5 s to 300 s for the 5 s configurations, or the
+6 points 10-300 s of the 10 s configuration.
 """
 from __future__ import annotations
 
@@ -16,12 +19,14 @@ import pandas as pd
 import torch
 
 from dataloader import FlightSlidingWindowDataset
-from model import AeroTrajUltra
+from model import AeroTrajUltra, load_into_model
 from run import gc2ecef_km
+
+DEFAULT_CKPT = "checkpoints_365_1200k/aerotraj_ultra_best.pt"
 
 
 def load_trained_aerotraj_ultra(
-    ckpt_path: str = "checkpoints/aerotraj_ultra_best.pt",
+    ckpt_path: str = DEFAULT_CKPT,
     device: str = "cpu",
 ) -> tuple[AeroTrajUltra, dict]:
     dev = torch.device(device)
@@ -31,7 +36,8 @@ def load_trained_aerotraj_ultra(
     norm_std = np.array(ckpt["norm_std"], dtype=np.float32)
 
     model = AeroTrajUltra(cfg, norm_mean, norm_std).to(dev)
-    model.load_state_dict(ckpt["model_state_dict"])
+    # load_into_model also handles a checkpoint saved from a compiled run
+    load_into_model(model, ckpt["model_state_dict"], strict=False)
     model.eval()
     return model, cfg
 

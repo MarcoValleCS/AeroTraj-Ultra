@@ -116,6 +116,47 @@ def caption(ax, x, y, text: str, fs: float = 7.4, color: str = MUTED):
             style="italic", linespacing=1.45)
 
 
+# ---------------------------------------------------------------- LaTeX output
+PGF_PREAMBLE = r"""% Preamble needed to compile the .pgf files in this directory:
+%   \usepackage{pgf}
+%   \usepackage{textcomp}
+%   \usepackage[utf8]{inputenc}   % or a modern engine (lualatex/xelatex)
+%   \usepackage{amsmath,amssymb}  % for the math in the labels
+% Then:  \input{model_schematic.pgf}
+%
+% The .pgf files are VECTOR LaTeX sources produced by matplotlib's PGF backend,
+% so they compile to the same figure at any size and inherit the document's fonts.
+% They are NOT hand-written TikZ: matplotlib emits low-level PGF paths.  For a
+% figure built from TikZ primitives, see model_schematic.dot (Graphviz) or write
+% the TikZ by hand from the same structure.
+"""
+
+
+def use_pgf_backend() -> None:
+    """Select matplotlib's PGF backend BEFORE pyplot is used."""
+    import matplotlib
+
+    matplotlib.use("pgf")
+    matplotlib.rcParams.update({
+        "pgf.texsystem": "pdflatex",
+        "pgf.rcfonts": False,
+        "font.family": "serif",
+        "font.size": 10,
+    })
+
+
+def save_figure(fig, out_png: Path, fmt: str = "png") -> None:
+    """Save the raster for the repository, or the PGF source for LaTeX."""
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    if fmt == "pgf":
+        pgf = out_png.with_suffix(".pgf")
+        fig.savefig(pgf)
+        print(f"saved {pgf}  (LaTeX vector source)")
+    else:
+        fig.savefig(out_png)
+        print(f"saved {out_png}")
+
+
 def legend(ax, x, y, entries: Iterable[Tuple[str, str]], fs: float = 7.6,
            title: str = "", cell: float = 1.0):
     """Colour swatches with labels, plus the bit-square convention."""

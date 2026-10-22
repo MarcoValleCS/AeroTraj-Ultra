@@ -32,7 +32,7 @@ from model import (
     HybridPhysicsConstrainedLoss,
     LSTMRegressionBaseline,
     SmoothedConstantVelocityBaseline,
-    normalize_state_dict,
+    load_into_model,
 )
 
 
@@ -269,7 +269,9 @@ def train_and_evaluate_all(
         f"Test Days: {dataset_stats['test_days']}"
     )
     print(
-        f"[Window] Input steps: {win_cfg['inp_seq_len']} ({win_cfg['inp_seq_len'] * 5}s @ 5s) | "
+        f"[Window] Input steps: {win_cfg['inp_seq_len']} "
+        f"({win_cfg['inp_seq_len'] * int(cfg['data']['dt_seconds'])}s "
+        f"@ {int(cfg['data']['dt_seconds'])}s) | "
         f"Horizon points: {win_cfg['horizon']} ({horizon_seconds[0]}s -> {horizon_seconds[-1]}s = "
         f"{horizon_seconds[-1] / 60:.1f}min)"
     )
@@ -399,7 +401,7 @@ def train_and_evaluate_all(
             )
             ckpt_prev = None
         if ckpt_prev is not None:
-            model.load_state_dict(normalize_state_dict(ckpt_prev["model_state_dict"]))
+            load_into_model(model, ckpt_prev["model_state_dict"], strict=False)
             best_val_mde = float(ckpt_prev.get("val_mde_3d_m", float("inf")))
             start_epoch = int(ckpt_prev.get("epoch", 8)) + 1
             print(
@@ -524,7 +526,7 @@ def train_and_evaluate_all(
 
     # Reload best checkpoint
     ckpt = torch.load(best_ckpt_path, map_location=device, weights_only=False)
-    model.load_state_dict(normalize_state_dict(ckpt["model_state_dict"]))
+    load_into_model(model, ckpt["model_state_dict"], strict=False)
     torch.save(ckpt, final_ckpt_path)
     print(f"\n[AeroTraj-Ultra] Loaded best checkpoint from Epoch {ckpt['epoch']} (Val MDE: {best_val_mde:.1f}m)")
     if stopped_early:

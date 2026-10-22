@@ -16,15 +16,25 @@ Out:  docs/figures/hybrid_loss.png
 """
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import matplotlib
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
+_ap = argparse.ArgumentParser(add_help=False)
+_ap.add_argument("--format", choices=["png", "pgf"], default="png")
+_args, _ = _ap.parse_known_args()
+if _args.format == "pgf":
+    from plot_style import use_pgf_backend
 
-from plot_style import PALETTE, arrow, bitrow, box, legend, rc
+    use_pgf_backend()
+else:
+    matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.patches import Circle  # noqa: E402
+
+from plot_style import arrow, bitrow, box, legend, rc, save_figure  # noqa: E402
 
 OUT = Path("docs/figures/hybrid_loss.png")
 
@@ -123,8 +133,7 @@ def main() -> None:
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout(pad=0.4)
-    fig.savefig(OUT)
-    print(f"saved {OUT}")
+    save_figure(fig, OUT, _args.format)
 
 
 if __name__ == "__main__":

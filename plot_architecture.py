@@ -20,14 +20,26 @@ Out:  docs/figures/architecture_overview.png
 """
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import matplotlib
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+# the backend must be chosen BEFORE pyplot is imported: PGF for the LaTeX source,
+# Agg for the raster that goes into the repository
+_ap = argparse.ArgumentParser(add_help=False)
+_ap.add_argument("--format", choices=["png", "pgf"], default="png")
+_args, _ = _ap.parse_known_args()
+if _args.format == "pgf":
+    from plot_style import use_pgf_backend
 
-from plot_style import arrow, bitrow, box, group, legend
+    use_pgf_backend()
+else:
+    matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402
+
+from plot_style import arrow, bitrow, box, group, legend, save_figure  # noqa: E402
 
 OUT = Path("docs/figures/architecture_overview.png")
 
@@ -40,14 +52,15 @@ def main() -> None:
 
     ax.text(76, 119.6, "AeroTraj-Ultra — model schematic",
             ha="center", va="center", fontsize=15.5, fontweight="bold", color="#111111")
-    ax.text(76, 116.2, "one forward pass emits all 13 horizons (5–300 s); every prediction "
-            "is a residual on a closed-form kinematic propagator",
+    ax.text(76, 116.2, "one forward pass emits the whole horizon vector (13 points 5–300 s, "
+            "or 6 points 10–300 s); every prediction is a residual on a closed-form "
+            "kinematic propagator",
             ha="center", va="center", fontsize=8.8, color="#555555")
 
     # ------------------------------------------------------------------ input --
     group(ax, 2, 78, 33, 24, "Input")
     box(ax, 4, 92, 29, 7.0, "x_obs   [B, 12, 9]",
-        "12 steps × 5 s = 60 s", role="yellow", fs=9.0, fs_body=7.4)
+        "12 steps = 60 s @ 5 s, or 120 s @ 10 s", role="yellow", fs=9.0, fs_body=7.4)
     ax.text(4.6, 90.4, "longitude · latitude · altitude\nvx · vy · vz · wind · temperature",
             ha="left", va="top", fontsize=6.9, color="#6b6b6b", linespacing=1.35)
     bitrow(ax, 4.6, 83.4, 24, cell=0.78, gap=0.26)
@@ -84,8 +97,8 @@ def main() -> None:
     # --------------------------------------------- decoder + prior + heads ----
     group(ax, 2, 4, 76, 47, "Non-autoregressive multi-horizon decoder")
     box(ax, 4, 39.5, 72, 9.4, "decoder input sequence",
-        "prefix: 55-bit Gray-Code step deltas → Conv1d   (11 tokens)\n"
-        "queries: horizon embedding ⊕ Fourier time features ⊕ context   (H = 13)",
+        "prefix: 55–58 bit Gray-Code step deltas → Conv1d   (11 tokens)\n"
+        "queries: horizon embedding ⊕ Fourier time features ⊕ context   (H = 13, or 6 at 10 s)",
         role="green", fs=9.0, fs_body=7.3)
     arrow(ax, (56, 64.5), (56, 49.4))
     box(ax, 4, 28.5, 72, 7.4, "pre-LN Transformer decoder",
@@ -144,8 +157,7 @@ def main() -> None:
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout(pad=0.4)
-    fig.savefig(OUT)
-    print(f"saved {OUT}")
+    save_figure(fig, OUT, _args.format)
 
 
 if __name__ == "__main__":

@@ -490,6 +490,22 @@ def normalize_state_dict(sd):
             for k, v in sd.items()}
 
 
+def load_into_model(model, state_dict, strict: bool = True):
+    """
+    Load a checkpoint into the RAW module, whether or not it is compiled.
+
+    The two directions are asymmetric and both have to be handled:
+      * a checkpoint saved from a compiled run carries `_orig_mod.` prefixes and
+        must be normalised (see `normalize_state_dict`);
+      * the TARGET matters too: `torch.compile` returns an OptimizedModule that
+        expects the prefixed keys, so loading an unprefixed dict into it fails
+        with "Missing key(s) ... _orig_mod.*".  Loading into the unwrapped module
+        is correct in every combination.
+    """
+    raw = getattr(model, "_orig_mod", model)
+    return raw.load_state_dict(normalize_state_dict(state_dict), strict=strict)
+
+
 def local_frame(x_obs: torch.Tensor):
     """
     Aircraft-centric local frame of the last observation.

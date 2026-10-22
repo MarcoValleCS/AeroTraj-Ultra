@@ -52,9 +52,12 @@ def decimate(points: np.ndarray, segments: np.ndarray, factor: int):
     if keep[-1] >= len(points):
         raise ValueError("decimation produced an out-of-range index")
     new_pts = np.ascontiguousarray(points[keep])
-    new_starts = np.zeros(len(segments), dtype=np.int64)
+    # exclusive prefix sum: the start of segment i is the sum of the counts of the
+    # segments before it, so the cumsum needs one element MORE than the counts
+    # (writing it into new_starts[1:] of an S-length array was the wrong size)
+    new_starts = np.zeros(len(segments) + 1, dtype=np.int64)
     np.cumsum(counts, out=new_starts[1:])
-    new_segs = np.column_stack([new_starts, counts, segments[:, 2], segments[:, 3]])
+    new_segs = np.column_stack([new_starts[:-1], counts, segments[:, 2], segments[:, 3]])
     return new_pts, new_segs.astype(np.int64)
 
 
@@ -65,6 +68,10 @@ def main() -> None:
     ap.add_argument("--factor", type=int, default=2, help="5 s -> factor*5 s")
     ap.add_argument("--inp-seq-len", type=int, default=12)
     ap.add_argument("--max-horizon-step", type=int, default=30)
+    ap.add_argument("--config", default=None,
+                    help="config of the derived dataset: its signature is written "
+                         "into dataset_stats.json so run.py reuses the dataset "
+                         "instead of rebuilding it from the raw data")
     args = ap.parse_args()
 
     src, dst = Path(args.src), Path(args.dst)
@@ -113,6 +120,31 @@ def main() -> None:
         print(f"[{split}] finestre (stride 1, finestra {span} punti): {tot:,}")
 
     out["total_pipeline_seconds"] = None
+
+    # The dataset is only reused by run.py if its stored `dataset_signature`
+    # matches one recomputed from the config, and the signature hashes
+    # dt_seconds and min_segment_steps.  The decimation copies the stats of the
+    # 5 s dataset, so without this the pipeline would decide to rebuild from
+    # scratch (a 5-hour re-download).  With --config the signature is computed by
+    # the pipeline's own method, so the two can never disagree.
+    if args.config:
+        try:
+            from data_pipeline import PyOpenSkyTrajectoryPipeline
+            cfg = json.load(open(args.config, encoding="utf-8"))
+            pipe = PyOpenSkyTrajectoryPipeline(args.config)
+            n = int(cfg["data"]["num_total_days"])
+            files = pipe.list_available_opensky_days("competition-data")[:n]
+            out["dataset_signature"] = pipe.dataset_signature(files)
+            for k in ["dt_seconds", "min_segment_steps", "num_total_days", "train_days",
+                      "val_days", "test_days", "row_groups_per_day"]:
+                if k in cfg["data"]:
+                    out[k] = int(cfg["data"][k])
+            print(f"[signature] {out['dataset_signature']} (dt={out['dt_seconds']} s, "
+                  f"min_segment_steps={out['min_segment_steps']}) -> run.py will reuse it")
+        except Exception as exc:                      # pragma: no cover
+            print(f"[signature] non calcolata ({str(exc)[:120]}): esegui "
+                  f"fix_10s_signature.py prima di addestrare")
+
     json.dump(out, open(dst / "dataset_stats.json", "w", encoding="utf-8"), indent=2)
     total = sum((dst / f"{s}_points.npy").stat().st_size for s in SPLITS) / 1e9
     print(f"\n[done] {dst} — {total:.2f} GB, griglia {5 * factor} s")
