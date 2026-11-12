@@ -848,10 +848,10 @@ stopping. `torch.compile` off.
 | model | MDE | 10 s | 30 s | 60 s | 90 s | 180 s | 300 s |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | **AeroTraj-Ultra (ours)** | **1 256.0** | **65.0** | **123.8** | **326.2** | **631.5** | **1 971.7** | **4 418.0** |
-| FlightBERT++ V2 (AAAI 2024), faithful | 1 330.8 | 73.7 | 151.7 | 377.4 | 703.9 | 2 115.5 | 4 562.9 |
-| FlightBERT++ V2, without ACoAtt | 1 465.1 | 76.7 | 162.3 | 406.0 | 758.0 | 2 305.3 | 5 082.0 |
-| BiLSTM regression | 1 801.3 | 101.5 | 251.9 | 584.9 | 1 028.1 | 2 838.4 | 6 002.8 |
-| Kalman filter (CV, learnable noise) | 2 215.6 | 111.8 | 292.9 | 688.8 | 1 210.8 | 3 421.3 | 7 568.3 |
+| FlightBERT++ V2 + the ACoAtt embedding | 1 437.1 | 76.6 | 162.5 | 405.4 | 752.7 | 2 260.8 | 4 964.6 |
+| FlightBERT++ V2 (AAAI 2024), reference | 1 463.2 | 76.5 | 162.6 | 406.2 | 759.5 | 2 300.2 | 5 074.1 |
+| BiLSTM regression | 1 851.0 | 107.4 | 271.2 | 621.8 | 1 078.2 | 2 917.0 | 6 110.6 |
+| Kalman filter (CV, learnable noise) | 2 069.4 | 92.5 | 239.8 | 590.5 | 1 073.9 | 3 187.2 | 7 232.8 |
 | LSTM regression | 2 358.3 | 160.7 | 442.1 | 953.5 | 1 551.4 | 3 738.1 | 7 304.1 |
 | IMM (CV/CA/CT, learnable noise) | 2 416.2 | 147.6 | 391.8 | 861.7 | 1 438.8 | 3 744.2 | 7 913.0 |
 | CV least-squares (no learning) | 2 624.0 | 154.4 | 422.9 | 942.2 | 1 577.8 | 4 084.0 | 8 562.7 |
@@ -871,27 +871,54 @@ each horizon, i.e. who wins where. Regenerate with `plot_bench_10s.py`.
 
 **Findings.**
 
-1. **AeroTraj-Ultra wins the same-budget comparison**: −5.6 % against the best literature
-   model (the FlightBERT++ with the ACoAtt module), and −43.3 % against the best classical
-   filter. It is the only model that is better than the *Kalman filter with a learned noise
-   model* at every horizon.
-2. **The attribute-correlation attention is worth −9.2 %** on the same architecture
-   (1 465.1 → 1 330.8 m), reproducing the ablation of §6.2 on a completely different dataset
-   and grid. The module is not a detail: removing it costs more than the whole difference
-   between the two best models.
-3. **The deep-regression baselines do not beat the classical filter.** The LSTM (2 358.3 m)
-   is *worse* than the Kalman filter with a learnable noise model (2 215.6 m, +6.4 %): with
-   the same data, the same budget and the same optimiser, the recurrent regressor never
-   learns the noise model it needs. The BiLSTM is much better than the LSTM (−23.6 %,
-   reproducing the A1/A2 ordering of the FlightBERT paper) and is the best of the three
-   regression models, but it is still 19 % worse than the Kalman filter.
-4. **The multi-hypothesis filter does not pay off here.** The IMM (2 416.2 m) is 9.0 %
-   *worse* than the single-mode Kalman filter (2 215.6 m) even with a learnable noise model,
+1. **AeroTraj-Ultra wins the same-budget comparison**: −12.6 % against the best literature
+   model (the FlightBERT++ with the ACoAtt embedding), −39.3 % against the best classical
+   filter, and −10.6 % against the strongest of the regression baselines. It is better than
+   the Kalman filter at *every* horizon.
+2. **The attribute-correlation attention is worth −1.8 %** on the same architecture
+   (1 463.2 → 1 437.1 m), with the width, the depth and the schedule held fixed. A first
+   version of this ablation reported −9.2 % because the two variants differed in width as
+   well; removing that confound shrinks the effect by a factor of five. The module still
+   helps, but it is not the dominant term.
+3. **Direction matters more than depth.** The BiLSTM (1 851.0 m) is −21.5 % better than the
+   LSTM (2 358.3 m) and −10.6 % better than the Kalman filter with a learned noise model;
+   the unidirectional LSTM is +14.0 % *worse* than the same filter. With the same data and
+   the same budget, two directions of recurrence are what it takes to beat a well-tuned
+   classical estimator at these horizons.
+4. **The multi-hypothesis filter does not pay off here.** The IMM (2 416.2 m) is 16.8 %
+   *worse* than the single-mode Kalman filter (2 069.4 m) even with a learnable noise model,
    a learnable mode-transition matrix and a learnable turn rate. The extra hypotheses cost
-   more in estimation noise than they gain in coverage: at these horizons the manoeuvre
-   distribution is too broad for a three-mode Gaussian mixture to track.
-5. **The error ordering is the same at every horizon**, which is the point of the
-   non-autoregressive decoder: no model overtakes another between 10 s and 300 s.
+   more in estimation noise than they gain in coverage, and the coordinated-turn mode
+   saturates its own bound — the signature of an overfitted mode.
+5. **The error ordering is the same at every horizon** except in the 60–90 s band, where the
+   Kalman filter is briefly competitive with the BiLSTM: the point of the non-autoregressive
+   decoder is that no model's ranking depends on which horizon one looks at.
+
+### 6.7.2 Implementation verification
+
+A table of re-implementations is only worth reading if the implementations are what they
+claim to be, so every model is checked numerically against an independent reference before
+it enters a table (`test_conformance.py`, 70 checks; the full register is in `MODELS.md`):
+the Kalman filter against the same equations written a second time in NumPy (agreement
+1e-2 m over the six horizons), the IMM pinned to a single mode against the same filter
+(agreement 0.0 m), the covariances against positive semi-definiteness, the aircraft-centric
+frame against the identity, the codecs against their own lattice, the metrics against an
+independent haversine computation, and the published hyper-parameters field by field.
+
+The exercise found **three real defects**, all of them silent:
+
+* the Kalman filter propagated its covariance as `F P F` instead of `F P Fᵀ`. The
+  transition is not symmetric, so the covariance became indefinite (smallest eigenvalue
+  −5·10²) within one window and the gain was wrong — the filter still produced plausible
+  positions, which is what made the defect invisible;
+* the BiLSTM pooled the backward state of the **last** step instead of the first, i.e. it
+  threw away the backward direction and kept a one-element summary;
+* a re-implementation of the 2024 model hard-coded the observation step to 5 s inside its
+  mode propagation, which would have doubled every displacement on the 10 s grid.
+
+All three are fixed and the affected models retrained. The same pass removed a confound in
+the ACoAtt ablation (the two variants differed in width as well as in the module) and a
+reproducibility defect (a dataset on disk was ignored when OpenSky was unreachable).
 
 <!--RESULTS-10S-->
 

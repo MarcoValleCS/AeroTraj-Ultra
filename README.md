@@ -8,10 +8,13 @@ OpenSky traffic, trained on a single GPU.**
 > accumulation), grounds every prediction in an analytical kinematic propagator, and fuses a
 > differentiable trust-region gate borrowed from multi-head action filtering.
 
-📄 **Technical report (paper-style, all the evidence): [`docs/PAPER.md`](docs/PAPER.md)** —
-method, experiments, ablations, uncertainty calibration, **inference latency**, negative
-results. Formal spec: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Lab notebook:
-[`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md).
+📘 **Documentation index: [`docs/README.md`](docs/README.md).** The project manual is
+[`docs/GUIDE.md`](docs/GUIDE.md) (data, pipeline, environment, conventions, troubleshooting);
+the technical report with all the evidence is [`docs/PAPER.md`](docs/PAPER.md) (method,
+experiments, ablations, uncertainty calibration, **inference latency**, negative results);
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the formal specification and
+[`docs/MODELS.md`](docs/MODELS.md) catalogues every implemented model with its conformance
+report. The chronological lab notebook is [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md).
 
 | | |
 |---|---|
@@ -23,7 +26,7 @@ results. Formal spec: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Lab notebo
 | **Result** | **991.6 m** 3-D ECEF mean distance error (5 s–300 s) — best of 10 compared models, 90-day run |
 | **Best (365 days)** | **790.2 m** on the March split and **865.1 m** on the Nov–Dec split — **−20.1 %** vs the same model trained on 90 days, *apples-to-apples on the same test set* |
 | **Window study** | 12 points are 60 s at a 5 s step or **120 s at 10 s**: the long window wins **−7.3 % at 300 s** and loses **+5.5 % at 10 s** — the crossover is at 60 s (§4.6) |
-| **Literature, re-implemented** | on the same 365 days and the same 10 s grid, with the same budget: ours **1 256 m** vs FlightBERT++ (AAAI 2024) **1 331 m**, BiLSTM 1 801 m, Kalman filter 2 216 m, LSTM 2 358 m — **−5.6 %** vs the best literature model, **−43 %** vs the best classical filter (§4.8) |
+| **Literature, re-implemented** | on the same 365 days and the same 10 s grid, with the same budget: ours **1 256 m** vs FlightBERT++ (AAAI 2024) **1 437 m**, BiLSTM 1 851 m, Kalman filter 2 069 m, LSTM 2 358 m — **−12.6 %** vs the best literature model, **−39 %** vs the best classical filter (§4.7) |
 | **Speed** | 1 aircraft end-to-end in **19.3–20.7 ms**, or **2.8–6.5 ms** with `torch.compile` (3–7×, verified MDE-neutral) · **67 600–73 300 aircraft/s** at batch 4096 · latency flat in the horizon (1.17× for 13 horizons) |
 | **Code** | `model.py` (architecture) · `run.py` (training) · `bench_models.py` (literature replications) |
 | **Uncertainty** | multi-hypothesis head (K=8) + conformal calibration → certified 90 % band with a 56 % smaller radius |
@@ -531,10 +534,10 @@ off.
 | model | MDE [m] | 10 s | 30 s | 60 s | 90 s | 180 s | 300 s |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | **AeroTraj-Ultra (ours)** | **1 256.0** | **65.0** | **123.8** | **326.2** | **631.5** | **1 971.7** | **4 418.0** |
-| FlightBERT++ V2 (AAAI 2024), faithful | 1 330.8 | 73.7 | 151.7 | 377.4 | 703.9 | 2 115.5 | 4 562.9 |
-| FlightBERT++ V2, without ACoAtt | 1 465.1 | 76.7 | 162.3 | 406.0 | 758.0 | 2 305.3 | 5 082.0 |
-| BiLSTM regression | 1 801.3 | 101.5 | 251.9 | 584.9 | 1 028.1 | 2 838.4 | 6 002.8 |
-| Kalman filter (CV, learnable noise) | 2 215.6 | 111.8 | 292.9 | 688.8 | 1 210.8 | 3 421.3 | 7 568.3 |
+| FlightBERT++ V2 + the ACoAtt embedding | 1 437.1 | 76.6 | 162.5 | 405.4 | 752.7 | 2 260.8 | 4 964.6 |
+| FlightBERT++ V2 (AAAI 2024), reference | 1 463.2 | 76.9 | 163.0 | 406.2 | 759.8 | 2 300.1 | 5 074.1 |
+| BiLSTM regression | 1 851.0 | 107.0 | 271.0 | 622.0 | 1 078.0 | 2 916.9 | 6 110.6 |
+| Kalman filter (CV, learnable noise) | 2 069.4 | 92.2 | 239.7 | 589.9 | 1 074.0 | 3 187.1 | 7 232.8 |
 | LSTM regression | 2 358.3 | 160.7 | 442.1 | 953.5 | 1 551.4 | 3 738.1 | 7 304.1 |
 | IMM (CV/CA/CT, learnable noise) | 2 416.2 | 147.6 | 391.8 | 861.7 | 1 438.8 | 3 744.2 | 7 913.0 |
 | CV least-squares (no learning) | 2 624.0 | 154.4 | 422.9 | 942.2 | 1 577.8 | 4 084.0 | 8 562.7 |
@@ -547,15 +550,17 @@ the format of Table I of the FlightBERT paper. Regenerate with `make_table_mae_r
 
 **Findings.**
 
-1. **Ours wins the same-budget comparison**: −5.6 % against the best literature model and
-   −43.3 % against the best classical filter, and it is the only model better than the
-   Kalman filter at *every* horizon.
-2. **The attribute-correlation attention is worth −9.2 %** on the same architecture, which
-   reproduces the ablation of §4.2 on a different dataset and grid.
-3. **The deep-regression baselines do not beat the classical filter**: the LSTM is 6.4 %
-   *worse* than the Kalman filter with a learned noise model. The BiLSTM is much better than
-   the LSTM (−23.6 %) but still 19 % behind the filter.
-4. **The multi-hypothesis filter does not pay off**: the IMM is 9.0 % worse than the
+1. **Ours wins the same-budget comparison**: −12.6 % against the best literature model and
+   −39.3 % against the best classical filter, and it is the better model at *every* horizon.
+2. **The attribute-correlation attention is worth −1.8 %** on the same architecture — a small
+   but consistent gain, and much smaller than the −9.2 % that a first, confounded version of
+   the ablation reported (the two variants differed in width as well as in the module; see
+   `docs/MODELS.md` §4).
+3. **The BiLSTM is the strongest of the non-learned-prior baselines**: −10.6 % against the
+   Kalman filter with a learned noise model, and −21.5 % against the LSTM. The *unidirectional*
+   LSTM, on the other hand, is 14.0 % *worse* than the filter: with the same data and the same
+   budget, the recurrent regressor never learns the noise model it needs.
+4. **The multi-hypothesis filter does not pay off**: the IMM is 16.8 % worse than the
    single-mode Kalman filter, and its coordinated-turn mode saturates its own turn-rate
    bound — the sign of an overfitted mode.
 5. **The binary-encoding literature needs its BCE.** The FlightBERT++ trained with the
@@ -690,6 +695,7 @@ benchmarks and analysis
   check_pool_quality.py     does the pruned pool change the metric?
   test_codec_10s.py         unit test of the Gray-Code lattices on the 10 s grid
   test_baselines.py         unit tests of the re-implementations
+  test_conformance.py       70 checks: frames, codecs, filters vs NumPy, metrics, losses, contracts
   test_loss_balance.py      the BCE/MSE balance of the Hybrid Constrained loss
   check_docs.py             consistency check of the documentation
   make_benchmark_report.py  unified 12-model table on the same test split
@@ -740,8 +746,11 @@ one-shot runners
 
   requirements.txt          the verified environment (numpy/matplotlib/triton pitfalls)
   docs/
+    README.md               the documentation index and the reading order
+    GUIDE.md                the project manual (data, pipeline, environment, conventions)
     PAPER.md                the technical report (paper-style, all the evidence)
-    ARCHITECTURE.md         formal specification of the model
+    ARCHITECTURE.md         formal specification of the model, equation by equation
+    MODELS.md               every implemented model + the conformance report
     EXPERIMENTS.md          full experimental log (chronological, every run)
     figures/                the figures, their sources and how to rebuild them
   results*/                 reports, metrics and CSVs of every run (text: committed)
@@ -764,11 +773,14 @@ one-shot runners
 > point of the data-scaling study; both can be rebuilt with `python data_pipeline.py
 > --config <config>`, which downloads the raw OpenSky days again.
 
-> **Read first:** [`docs/PAPER.md`](docs/PAPER.md) is the self-contained technical report
-> (abstract, method, experiments, ablations, uncertainty calibration, inference latency,
-> limitations and the negative results). [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) specifies
-> the model formally, and [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) is the chronological lab
-> notebook.
+> **Read first:** [`docs/README.md`](docs/README.md) is the index of the documentation.
+> [`docs/GUIDE.md`](docs/GUIDE.md) is the project manual (data, pipeline, environment,
+> conventions, troubleshooting); [`docs/PAPER.md`](docs/PAPER.md) is the self-contained
+> technical report (abstract, method, experiments, ablations, uncertainty calibration,
+> inference latency, limitations and the negative results);
+> [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) specifies the model formally;
+> [`docs/MODELS.md`](docs/MODELS.md) catalogues every implemented model with its conformance
+> report; [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) is the chronological lab notebook.
 
 `data*/` (up to 10 GB per dataset) and `checkpoints*/` are **not** committed; the data is
 rebuilt from OpenSky in ~45 min for 90 days and ~110 min for 180 days.

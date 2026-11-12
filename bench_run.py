@@ -371,7 +371,8 @@ def build_models(cfg, ds_train, horizon_seconds, args) -> Dict[str, Adapter]:
             lambda p, t: horizon_weighted_smooth_l1(p, t, horizon_seconds),
         )
 
-        imm = IMMResidualModel(H, horizon_seconds, T, hidden_dim=192, n_layers=2).to(DEVICE)
+        imm = IMMResidualModel(H, horizon_seconds, T, hidden_dim=192, n_layers=2,
+                               obs_dt=float(cfg["data"]["dt_seconds"])).to(DEVICE)
         out["imm_res"] = DetAdapter(
             "imm_res", _maybe_compile(imm, cmode),
             lambda p, t: horizon_weighted_smooth_l1(p, t, horizon_seconds),

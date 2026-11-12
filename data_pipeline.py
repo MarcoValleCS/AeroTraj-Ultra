@@ -304,6 +304,34 @@ class PyOpenSkyTrajectoryPipeline:
         os.replace(tmp_path, cache_path)
         return day_pts, day_segs, raw_rows
 
+    def _stats_compatible(self, stats: Dict[str, Any]) -> bool:
+        """
+        Does an on-disk dataset match this configuration?
+
+        This is the part of `dataset_signature` that does not need the list of
+        the daily files exposed by OpenSky: the structural parameters and the
+        split sizes.  It lets a machine with no network access (or with no
+        OpenSky credentials) reuse a dataset that is already on disk instead of
+        failing while listing the bucket.
+        """
+        d = self.data_cfg
+        ok = (
+            int(stats.get("num_total_days", 0)) == int(d["num_total_days"])
+            and int(stats.get("dt_seconds", 0)) == int(d["dt_seconds"])
+            and int(stats.get("min_segment_steps", 0)) == int(d["min_segment_steps"])
+            and stats.get("feature_names") == FEATURE_NAMES
+        )
+        # the region bounds are compared only when the stats record them: a
+        # dataset derived by decimation (build_10s_dataset.py) did not copy the
+        # field before this fix, and the geometry cannot have changed
+        if stats.get("region_bounds") is not None:
+            ok = ok and stats.get("region_bounds") == d["region_bounds"]
+        splits = stats.get("splits", {})
+        for name, n in (("train", d["train_days"]), ("val", d["val_days"]),
+                        ("test", d["test_days"])):
+            ok = ok and int(splits.get(name, {}).get("num_days", -1)) == int(n)
+        return ok
+
     def build_dataset_splits(self, force_rebuild: bool = False) -> Dict[str, Any]:
         """
         Stream N consecutive days of real OpenSky trajectories via pyopensky S3:
@@ -314,8 +342,23 @@ class PyOpenSkyTrajectoryPipeline:
 
         Days are downloaded/processed in parallel (network bound) and cached
         individually, so an interrupted build resumes instead of restarting.
+
+        The on-disk dataset is checked BEFORE any network access: a dataset that
+        matches the configuration is reused even when OpenSky is unreachable.
         """
         stats_file = self.data_dir / "dataset_stats.json"
+
+        if stats_file.exists() and not force_rebuild:
+            with open(stats_file, "r", encoding="utf-8") as f:
+                stats = json.load(f)
+            if self._stats_compatible(stats):
+                print(
+                    f"[DataPipeline] Reusing the existing {stats.get('num_total_days')}-day dataset "
+                    f"in {self.data_dir} (signature {stats.get('dataset_signature', 'n/a')})"
+                )
+                return stats
+            print(f"[DataPipeline] {self.data_dir} exists but does not match this "
+                  f"configuration -> rebuilding")
 
         available_files = self.list_available_opensky_days("competition-data")
         num_total_days = int(self.data_cfg["num_total_days"])
@@ -372,6 +415,9 @@ class PyOpenSkyTrajectoryPipeline:
             "val_days": val_days,
             "test_days": test_days,
             "dt_seconds": self.data_cfg["dt_seconds"],
+            # the region bounds are part of the dataset signature; echoing them
+            # here lets a machine validate an on-disk dataset without the network
+            "region_bounds": self.data_cfg.get("region_bounds"),
             "row_groups_per_day": rgs_per_day,
             "min_segment_steps": int(self.data_cfg["min_segment_steps"]),
             "dataset_signature": signature,

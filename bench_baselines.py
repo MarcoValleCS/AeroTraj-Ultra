@@ -212,7 +212,10 @@ class KalmanFilterBaseline(nn.Module):
 
         for t in range(1, T):
             x = torch.einsum("ij,bj->bi", Fm, x)                 # predict
-            P = torch.einsum("ij,bjk,kl->bil", Fm, P, Fm) + Qs
+            # F P F^T, NOT F P F: the transition is not symmetric, and using
+            # the wrong product makes the covariance indefinite (measured: the
+            # smallest eigenvalue reaches -5e2 after a few steps)
+            P = torch.einsum("ij,bjk,lk->bil", Fm, P, Fm) + Qs
             z = meas[:, t]                                       # [B,3]
             y = z - x[:, 0:3]                                    # innovation
             S = P[:, 0:3, 0:3] + R                               # [B,3,3]
@@ -420,6 +423,8 @@ class BiLSTMRegressionBaseline(nn.Module):
     ) -> None:
         super().__init__()
         self.horizon = horizon
+        self.hidden_dim = hidden_dim
+        self.n_layers = num_layers
         self.register_buffer("norm_mean", torch.tensor(norm_mean[:6], dtype=torch.float32))
         self.register_buffer("norm_std", torch.tensor(norm_std[:6], dtype=torch.float32))
         horizon_ref = float(max(horizon_seconds))
@@ -449,7 +454,14 @@ class BiLSTMRegressionBaseline(nn.Module):
         last_6d = x_6d[:, -1:, :]
         norm_in = (x_6d - self.norm_mean.view(1, 1, 6)) / self.norm_std.view(1, 1, 6)
         out, _ = self.lstm(norm_in)
-        h = out[:, -1, :]                              # [B, 2*hidden]
+        # The summary of a bidirectional LSTM is the FORWARD state at the last
+        # step and the BACKWARD state at the FIRST step: the backward pass has
+        # seen the whole sequence only after T steps, i.e. at index 0.  Taking
+        # out[:, -1, :] (as a single-direction model would) keeps the backward
+        # state of the last step, which has seen one element only, and throws
+        # away the backward summary of the sequence.
+        h = torch.cat([out[:, -1, : self.hidden_dim],
+                       out[:, 0, self.hidden_dim:]], dim=-1)      # [B, 2*hidden]
         delta = self.head(h).view(-1, self.horizon, 6) * self.out_scale * (0.1 + 0.9 * self.t_scale)
         return last_6d + delta
 
@@ -867,10 +879,19 @@ class FlightBERTPPV2Faithful(nn.Module):
 
     The `FlightBERT_PP_V2_Baseline` of `model.py` is the SAME architecture with
     the ACoAtt module removed (this project uses that version as an ablation);
-    this class is the faithful one.
+    this class adds it.  The two share the width and the depth (`d_model = 128`,
+    2 + 2 layers) so that the difference between them is the ACoAtt module and
+    nothing else.
+
+    Honest labelling: the reference implementation published with the AAAI 2024
+    paper (gdy-scu/FlightBERT_PP_V2) does NOT contain the ACoAtt block - it joins
+    the six Gray-Code fields in a single conv stem.  The ACoAtt is the block of
+    the 2023 T-ITS paper.  This class is therefore "FlightBERT++ with the 2023
+    attribute-correlation embedding", i.e. the ablation that measures what the
+    block is worth on the delta decoder, not a reproduction of the 2024 network.
     """
 
-    def __init__(self, cfg: Dict, attr_dim: int = 64, d_model: int = 192,
+    def __init__(self, cfg: Dict, attr_dim: int = 64, d_model: int = 128,
                  n_head: int = 4, n_layer: int = 2, dropout: float = 0.1) -> None:
         super().__init__()
         from model import (  # local import: model.py is the project's module

@@ -624,9 +624,13 @@ class IMMResidualModel(nn.Module):
     MODES = 3   # 0 = CV, 1 = CA, 2 = coordinated turn
 
     def __init__(self, horizon: int, horizon_seconds: List[int], inp_seq_len: int = 12,
-                 hidden_dim: int = 192, n_layers: int = 2, dropout: float = 0.1) -> None:
+                 hidden_dim: int = 192, n_layers: int = 2, dropout: float = 0.1,
+                 obs_dt: float = 5.0) -> None:
         super().__init__()
         self.horizon = horizon
+        # the observation step: it was hard-coded to 5 s inside _mode_predict,
+        # which silently doubles every displacement on a 10 s grid
+        self.obs_dt = float(obs_dt)
         self.register_buffer("t_sec", torch.tensor(horizon_seconds, dtype=torch.float32))
         prev = torch.cat([torch.zeros(1), torch.tensor(horizon_seconds[:-1], dtype=torch.float32)])
         self.register_buffer("dt_sec", torch.tensor(horizon_seconds, dtype=torch.float32) - prev)
@@ -661,7 +665,7 @@ class IMMResidualModel(nn.Module):
 
     def _mode_predict(self, x_obs: torch.Tensor, origin):
         B, T, _ = x_obs.shape
-        dt = 5.0
+        dt = self.obs_dt
         meas = to_local(x_obs, origin)                     # [B,T,3] metres
         v_init = (meas[:, 1] - meas[:, 0]) / dt
         x_init = meas[:, 0]

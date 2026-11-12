@@ -91,9 +91,9 @@ BATCH_SIZE = {
 
 PRETTY = {
     "ours": "AeroTraj-Ultra (ours)",
-    "fbpp_v2": "FlightBERT++ V2 (AAAI 2024), no ACoAtt",
-    "fbpp_v2_faithful": "FlightBERT++ V2 (AAAI 2024), faithful",
-    "fbpp_v2_faithful_mse": "FlightBERT++ V2 (AAAI 2024), faithful, MSE-only loss",
+    "fbpp_v2": "FlightBERT++ V2 (AAAI 2024), reference",
+    "fbpp_v2_faithful": "FlightBERT++ V2 + ACoAtt (2023 block)",
+    "fbpp_v2_faithful_mse": "FlightBERT++ V2 + ACoAtt, MSE-only loss",
     "flightbert": "FlightBERT (IEEE T-ITS 2023), BCE-dominant loss",
     "flightbert_mse": "FlightBERT (T-ITS 2023), MSE-only loss",
     "flightbert_soft": "FlightBERT (T-ITS 2023), roll-out without threshold",
@@ -108,8 +108,19 @@ PRETTY = {
 # own paper (1e-4): with 1e-3 the logits of the binary head saturate, the
 # sigmoid gradient vanishes and the high bits of the encoding stay wrong.
 LR_OVERRIDE = {
+    # The FlightBERT of 2023 whose own paper trains at 1e-4: at 1e-3 the logits
+    # of the binary head saturate, the sigmoid gradient vanishes and the high
+    # bits of the encoding stay wrong (measured, see docs/MODELS.md).
     "flightbert": 1e-4,
     "flightbert_mse": 1e-4,
+    # The FlightBERT++ keeps the benchmark's schedule (1e-3).  The reference
+    # implementation trains at 1e-4 for 50 epochs; at our budget of 25 epochs
+    # that learning rate does not converge, and the measured cost is large:
+    # 1 901.7 m of validation error against 1 502.4 m at 1e-3.  The deviation
+    # is the schedule, and it is declared with both numbers.
+    "fbpp_v2": 1e-3,
+    "fbpp_v2_faithful": 1e-3,
+    "fbpp_v2_faithful_mse": 1e-3,
 }
 
 # The balance of the Hybrid Constrained loss, per model: (w_bce, w_cont).
@@ -349,6 +360,10 @@ def main() -> None:
           f"{epochs * max_train:,} samples per model")
 
     args.models = args.models or ["ours", "flightbert", "kalman", "imm", "lstm", "bilstm", "fbpp_v2"]
+    # accept both "--models a b c" and "--models a,b,c": a shell can lose a
+    # space-separated token (it happened: one model silently disappeared from a
+    # four-model run), and a comma-separated list is a single token
+    args.models = [m for tok in args.models for m in tok.split(",") if m]
     args.models = [MODEL_ALIASES.get(m, m) for m in args.models]
     unknown = [m for m in args.models if m not in KNOWN_MODELS]
     if unknown:

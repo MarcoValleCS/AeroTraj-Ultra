@@ -1,22 +1,41 @@
 # AeroTraj-Ultra — formal architecture specification
 
 This document specifies the model formally: every module, every equation, every
-hyper-parameter. It is intended to be readable next to `model.py` (1 277 lines) and
+hyper-parameter. It is intended to be readable next to `model.py` (1 300+ lines) and
 sufficient to re-implement the model from scratch.
 
+**The model is grid-parametric.** Two configurations are trained and reported, and the
+only differences between them are the time step, the horizon set and the width of the
+delta lattice:
+
+| | 5 s grid | 10 s grid |
+|---|---|---|
+| config | `config_365d.json` | `config_365d_10s.json` |
+| step `Δ` | 5 s | **10 s** |
+| window | 12 points = 60 s | 12 points = **120 s** |
+| horizons `H` | 13, 5 → 300 s | 6, 10 → 300 s |
+| absolute lattice | 85 bits | 85 bits |
+| delta lattice | 55 bits | **58 bits** |
+
+Every equation below is written for the 5 s grid and holds verbatim for the 10 s one,
+with `Δ`, `H` and the delta widths taken from the configuration. `config_utils.resolve_horizon_steps()`
+derives the step indices from the horizon *seconds* and verifies the declared arrays, so
+the time step is a parameter and never a constant.
+
 Notation follows the standard 4D-trajectory-prediction literature: a state vector
-`s_t = [φ, λ, h, v_x, v_y, v_z]` (latitude, longitude, altitude, ground velocity, vertical
+`s_t = [λ, φ, h, v_x, v_y, v_z]` (longitude, latitude, altitude, ground velocity, vertical
 rate) and an observation window `x = {s_{t−T+1}, …, s_t}`.
 
 ---
 
 ## 1. Problem statement
 
-Given a window of `T = 12` ADS-B state vectors sampled every `Δ = 5 s` (60 s of history),
-predict the future state at a set of `H` non-uniform horizons
+Given a window of `T = 12` ADS-B state vectors sampled every `Δ` seconds, predict the
+future state at a set of `H` non-uniform horizons
 
 ```
-h = {5, 10, 15, 20, 30, 45, 60, 90, 120, 150, 180, 240, 300} s
+5 s grid   h = {5, 10, 15, 20, 30, 45, 60, 90, 120, 150, 180, 240, 300} s   (H = 13)
+10 s grid  h = {10, 30, 60, 90, 180, 300} s                                 (H = 6)
 ```
 
 in the 6-D space `y_k = [λ_k, φ_k, h_k, v_x,k, v_y,k, v_z,k]`.
@@ -82,17 +101,23 @@ Total **85 bits** for the observation window.
 
 Step-to-step *deltas* use a finer lattice, which is what the decoder actually predicts:
 
-| delta | bits | scale | resolution per 5 s step |
-|---|---:|---:|---|
-| `Δλ` | 10 | 10 000 | 0.0001° ≈ 11.1 m |
-| `Δφ` | 10 | 10 000 | 0.0001° ≈ 11.1 m |
-| `Δh` | 9 | 10 | 1 m |
-| `Δv_x` | 9 | 2 | 0.5 km/h |
-| `Δv_y` | 9 | 2 | 0.5 km/h |
-| `Δv_z` | 8 | 10 | 0.1 m/s |
+| delta | bits (5 s) | bits (10 s) | scale | resolution per step (5 s grid) |
+|---|---:|---:|---:|---|
+| `Δλ` | 10 | **11** | 10 000 | 0.0001° ≈ 11.1 m |
+| `Δφ` | 10 | **11** | 10 000 | 0.0001° ≈ 11.1 m |
+| `Δh` | 9 | **10** | 10 | 1 m |
+| `Δv_x` | 9 | 9 | 2 | 0.5 km/h |
+| `Δv_y` | 9 | 9 | 2 | 0.5 km/h |
+| `Δv_z` | 8 | 8 | 10 | 0.1 m/s |
 
-Total **55 bits**. The 10× refinement with respect to FlightBERT's binary encoding is what
-removes the high-order bit-flip outliers.
+Total **55 bits** on the 5 s grid and **58 bits** on the 10 s one.  The 10× refinement with
+respect to FlightBERT's binary encoding is what removes the high-order bit-flip outliers;
+the three extra bits on the coarse grid are what keeps a doubled step displacement inside
+the lattice (verified: worst-case saturation 0.21 %, `verify_10s.py`).
+
+Because the lattice quantises the per-step *rate*, the cumulative position quantisation
+grows with the number of steps: ±0.5 code unit per step gives a worst case of
+`max_k · 0.5 / scale` — 5.6 m at the 10 s horizon, 167 m at 300 s on the 10 s grid.
 
 ### 3.2 Encoding
 
@@ -480,15 +505,15 @@ interpretable reference and as a residual anchor.
 
 | group | value |
 |---|---|
-| window | `T = 12` samples × 5 s |
-| horizons | 13 points, 5 s → 300 s (or 16 points, 5 s → 600 s) |
+| window | `T = 12` samples; 5 s (60 s of history) or 10 s (120 s) |
+| horizons | 13 points, 5 s → 300 s (5 s grid) · 6 points, 10 s → 300 s (10 s grid) · 16 points, 5 s → 600 s (the 90-day variant) |
 | `d_model` / heads / layers | 144 / 6 / 2 + 2 |
 | `attr_embed_dim` | 24 |
 | dropout | 0.1 |
 | optimiser | AdamW, lr 1e-3, weight decay 1e-4, betas (0.9, 0.999), eps 1e-8 |
 | schedule | OneCycleLR, `pct_start` 0.2, cosine anneal |
 | batch | 2 048 – 4 096 |
-| epochs | 30 – 80 (early stopping on validation MDE) |
+| epochs | 30 – 150 (early stopping on validation MDE) |
 | loss weights | `cont` 2.5, `vel` 0.6, `bce` 0.4, `gc_ste` 0.25, `physics` 0.25 |
 
 ---

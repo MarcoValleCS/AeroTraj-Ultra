@@ -1450,10 +1450,10 @@ righe):
 | modello | MDE | 10 s | 30 s | 60 s | 90 s | 180 s | 300 s |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | **AeroTraj-Ultra (ours)** | **1 256,0** | **65,0** | **123,8** | **326,2** | **631,5** | **1 971,7** | **4 418,0** |
-| FlightBERT++ V2 (fedele, con ACoAtt) | 1 330,8 | 73,7 | 151,7 | 377,4 | 703,9 | 2 115,5 | 4 562,9 |
-| FlightBERT++ V2 (senza ACoAtt) | 1 465,1 | 76,7 | 162,3 | 406,0 | 758,0 | 2 305,3 | 5 082,0 |
-| BiLSTM regression | 1 801,3 | 101,5 | 251,9 | 584,9 | 1 028,1 | 2 838,4 | 6 002,8 |
-| Kalman filter (CV, rumore imparabile) | 2 215,6 | 111,8 | 292,9 | 688,8 | 1 210,8 | 3 421,3 | 7 568,3 |
+| FlightBERT++ V2 + ACoAtt (2023 block) | 1 437,1 | 76,6 | 162,5 | 405,4 | 752,7 | 2 260,8 | 4 964,6 |
+| FlightBERT++ V2 (riferimento AAAI 2024) | 1 463,2 | 76,5 | 162,6 | 406,2 | 759,5 | 2 300,2 | 5 074,1 |
+| BiLSTM regression | 1 851,0 | 107,4 | 271,2 | 621,8 | 1 078,2 | 2 917,0 | 6 110,6 |
+| Kalman filter (CV, rumore imparabile) | 2 069,4 | 92,5 | 239,8 | 590,5 | 1 073,9 | 3 187,2 | 7 232,8 |
 | LSTM regression | 2 358,3 | 160,7 | 442,1 | 953,5 | 1 551,4 | 3 738,1 | 7 304,1 |
 | IMM (CV/CA/CT, rumore imparabile) | 2 416,2 | 147,6 | 391,8 | 861,7 | 1 438,8 | 3 744,2 | 7 913,0 |
 | CV least-squares (senza apprendimento) | 2 624,0 | 154,4 | 422,9 | 942,2 | 1 577,8 | 4 084,0 | 8 562,7 |
@@ -1461,25 +1461,20 @@ righe):
 
 **Letture**
 
-1. **AeroTraj-Ultra vince il confronto a parità di budget**: −5,6 % sul miglior modello della
-   letteratura (il FlightBERT++ con ACoAtt) e −43,3 % sul miglior filtro classico. È l'unico
-   modello che batte il *Kalman con rumore imparabile* a ogni orizzonte.
-2. **L'ACoAtt vale −9,2 %** sulla stessa architettura (1 465,1 → 1 330,8 m): la stessa
-   ablation del §6.2, su un dataset e una griglia completamente diversi. Il modulo non è un
-   dettaglio: toglierlo costa più della differenza fra i due modelli migliori.
-3. **Le baseline a regressione profonda NON battono il filtro classico**: l'LSTM
-   (2 358,3 m) è *peggiore* del Kalman con rumore imparabile (2 215,6 m, +6,4 %). Con gli
-   stessi dati, lo stesso budget e lo stesso ottimizzatore, il regressore ricorrente non
-   impara mai il modello di rumore che gli serve. Il BiLSTM è molto meglio dell'LSTM
-   (−23,6 %, che riproduce l'ordinamento A1/A2 del paper FlightBERT) ed è il migliore dei
-   tre modelli a regressione, ma resta 19 % peggio del Kalman.
-4. **Il filtro multi-iperspettrale non paga.** L'IMM (2 416,2 m) è 9,0 % *peggiore* del solo
-   Kalman a velocità costante (2 215,6 m), nonostante il rumore, la matrice di
-   transizione e il raggio di svolta imparabili. Le ipotesi extra costano più in rumore di
-   stima di quanto guadagnino in copertura: a questi orizzonti la distribuzione delle
-   manovre è troppo larga per una miscela gaussiana a tre mode.
-5. **L'ordine degli errori è lo stesso a ogni orizzonte**, che è il punto del decoder non
-   autoregressivo: nessun modello ne supera un altro tra 10 s e 300 s.
+1. **AeroTraj-Ultra vince il confronto a parità di budget**: −12,6 % sul miglior modello della
+   letteratura e −39,3 % sul miglior filtro classico, ed è migliore a ogni orizzonte.
+2. **L'ACoAtt vale −1,8 %** sulla stessa architettura (1 463,2 → 1 437,1 m), a larghezza,
+   profondità e schedule fissati. La prima versione di questa ablation riportava −9,2 %
+   perché le due varianti differivano anche in larghezza: togliere il confondimento riduce
+   l'effetto di un fattore cinque. Il modulo serve, ma non è il termine dominante.
+3. **La direzione conta più della profondità**: il BiLSTM (1 851,0 m) è −21,5 % meglio
+   dell'LSTM (2 358,3 m) e −10,6 % meglio del Kalman con rumore imparabile; l'LSTM
+   unidirezionale è invece +14,0 % *peggiore* dello stesso filtro.
+4. **Il filtro multi-iperspettrale non paga.** L'IMM (2 416,2 m) è 16,8 % *peggiore* del solo
+   Kalman a velocità costante (2 069,4 m), nonostante il rumore, la matrice di transizione e
+   il raggio di svolta imparabili: il modo CT satura il proprio limite, sintomo di overfitting.
+5. **L'ordine degli errori è lo stesso a ogni orizzonte**, tranne nella banda 60-90 s dove il
+   Kalman è brevemente competitivo col BiLSTM.
 
 **Il modello di rumore imparato dai filtri** (recuperato dai checkpoint):
 
