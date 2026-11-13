@@ -215,12 +215,15 @@ def train_and_evaluate_all(
     scheduler_override: Optional[str] = None,
     compile_mode: str = "none",
 ) -> None:
-    torch.manual_seed(97)
-    np.random.seed(97)
-    torch.set_num_threads(min(12, os.cpu_count() or 6))
-
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = json.load(f)
+
+    # the seed is the config's (every committed config says 97, the value that
+    # was hard-coded here): a seed replica is a config with another number
+    seed = int(cfg.get("seed", 97))
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    torch.set_num_threads(min(12, os.cpu_count() or 6))
 
     # GPU-friendly math kernels
     if torch.cuda.is_available():
@@ -285,7 +288,8 @@ def train_and_evaluate_all(
     max_train_per_epoch = int(tr_cfg["max_train_samples_per_epoch"])
 
     train_loader = FastSlidingWindowBatchLoader(
-        ds_train, batch_size=batch_size, shuffle=True, max_samples_per_epoch=max_train_per_epoch, device=device
+        ds_train, batch_size=batch_size, shuffle=True, max_samples_per_epoch=max_train_per_epoch, device=device,
+        seed=seed,
     )
     val_loader = FastSlidingWindowBatchLoader(
         ds_val, batch_size=batch_size, shuffle=False, device=device

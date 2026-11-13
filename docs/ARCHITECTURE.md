@@ -26,6 +26,10 @@ Notation follows the standard 4D-trajectory-prediction literature: a state vecto
 `s_t = [λ, φ, h, v_x, v_y, v_z]` (longitude, latitude, altitude, ground velocity, vertical
 rate) and an observation window `x = {s_{t−T+1}, …, s_t}`.
 
+**AeroTraj-Atlas** — the most accurate model measured on the 365-day test split — is this model plus a learned airspace
+field read along the kinematic prior (10 495 863 parameters, of which 9 134 208 are the map):
+see §15.
+
 ---
 
 ## 1. Problem statement
@@ -494,6 +498,7 @@ with
 | kinematic prior (3 learned scalars) | 3 | 0.0 % |
 | **total** | **1 276 983** | 100 % |
 | *(+ multi-hypothesis head, K=8)* | *+44 791* | *+3,5 %* |
+| *(AeroTraj-Atlas: + airspace field, §15.5)* | *+9 218 880 (total 10 495 863)* | *of which map 9 134 208* |
 
 The three learned time constants of the physics prior are the *only* parameters of the
 prior: the propagator itself is parameter-free, which is what makes it usable as an
@@ -515,6 +520,7 @@ interpretable reference and as a residual anchor.
 | batch | 2 048 – 4 096 |
 | epochs | 30 – 150 (early stopping on validation MDE) |
 | loss weights | `cont` 2.5, `vel` 0.6, `bce` 0.4, `gc_ste` 0.25, `physics` 0.25 |
+| airspace field (AeroTraj-Atlas, §15.8) | 6 levels, 0.5 → 16 cells/deg, 8 heading sectors, 5 altitude nodes, 8 features, table `2^18`, gain 10, read ahead, `refine` (aux. weight 0.5 · `cont`) |
 
 ---
 
@@ -528,3 +534,185 @@ With the optimisations of `docs/EXPERIMENTS.md` (prefix parity, removal of the p
 GPU→CPU synchronisations, constant tables as buffers, `torch.compile`), the step time drops
 from 144 ms to 75 ms at batch 2 048 on an RTX 4070 — a 1.9× speed-up with machine-precision
 equivalence.
+
+**AeroTraj-Atlas** (§15) adds three reads of the airspace field per forward pass, each an
+O(1) gather of 16 table rows per level (no neighbour search). Measured on an RTX 4070 with
+`FastPredictor`, input already on the GPU (`results_atlas/latency.json`; this harness does
+not include the host-to-device copy):
+
+| | AeroTraj-Ultra | AeroTraj-Atlas |
+|---|---:|---:|
+| 1 aircraft, eager | 17.4 ms | 42.2 ms (2.4×) |
+| 1 aircraft, `torch.compile(reduce-overhead)` | 0.65 ms | 0.66 ms |
+| batch 4 096, eager | 54.4 ms (75 348 aircraft/s) | 78.5 ms (52 172 aircraft/s) |
+| batch 4 096, compiled | 41.1 ms (99 780 aircraft/s) | 44.8 ms (91 355 aircraft/s) |
+
+Training: 53.2 s/epoch against 47.1 s/epoch compiled (1.13×) at the full budget.
+
+---
+
+## 15. Airspace field (AeroTraj-Atlas)
+
+Above ~30 s the residual error is *intent* (the next manoeuvre), which is not observable from
+the history. Road-agent predictors read it from the HD map (dynamic map collection, MTR); the
+route structure of the airspace is not in the ADS-B data, so here the map is **learned** from
+the trajectories and read along the trajectory the aircraft is about to fly.
+
+AeroTraj-Atlas is not a new class: it is `AeroTrajUltra` (`model.py`) with the configuration
+key `model.airspace_field`, a dict of `AirspaceField` keyword arguments plus the two switches
+`ahead` and `refine`. The final model sets `{"n_alt": 5, "refine": true}`. Without the key the
+model is AeroTraj-Ultra bit for bit (identical state dict and outputs; every existing
+checkpoint loads).
+
+### 15.1 The field
+
+**Region.** The dataset bounding box `data.region_bounds`: `λ ∈ [−15, 35]°`, `φ ∈ [30, 65]°`.
+A point outside the region is read at the border.
+
+**Levels.** `l = 0 … L−1`, `L = 6`, resolution `r_l = 0.5 · 2^l` cells per degree
+(0.5, 1, 2, 4, 8, 16: cells from 2° down to 0.0625°, about 7 km north–south). Grid corners per
+level:
+
+$$ n_x^{(l)}=\lceil 50\,r_l\rceil+1,\qquad n_y^{(l)}=\lceil 35\,r_l\rceil+1 $$
+
+with the continuous grid coordinates `x = (λ − λ_min) r_l`, `y = (φ − φ_min) r_l` (clamped to
+the region).
+
+**Heading axis.** `S = 8` sectors, **periodic**. With `ψ = atan2(v_x, v_y)` (clockwise from
+north), `s = (ψ / 2π mod 1) · S`; the corner `c_s + 1` wraps to `0`.
+
+**Altitude axis** (`n_alt = A`, `0` = no axis). Nodes at
+
+$$ h_k=h_{\max}\Big(\frac{k}{A-1}\Big)^2,\qquad h_{\max}=13\ \text{km}\ (\texttt{alt\_max}=1300\ \text{in 10 m}) $$
+
+i.e. 0, 0.81, 3.25, 7.31, 13 km for `A = 5`: finer near the ground, where the procedures are
+stacked. The coordinate is `a = sqrt(clamp(h / h_max, 0, 1)) · (A − 1)`.
+
+**Value.** Each level stores `F = 8` features per node. The value at a point is the
+multilinear interpolation of the 16 surrounding nodes (2 λ × 2 φ × 2 heading × 2 altitude):
+
+$$ \mathcal F_l(\lambda,\varphi,\psi,h)=\sum_{c\in\{0,1\}^4} w_x w_y w_s w_a\ T_l[\mathrm{idx}_l(c)],\qquad
+\mathcal F=g\,[\mathcal F_0\Vert\dots\Vert\mathcal F_{L-1}]\in\mathbb R^{48} $$
+
+with the usual linear weights (`w = 1 − f` or `f` on each axis), which sum to one, and a fixed
+gain `g = 10`.
+
+**Storage.** A level whose `n_x n_y S A` nodes fit `2^18` entries (`log2_table = 18`) is a
+**dense** table,
+
+```
+idx = c_x + n_x (c_y + n_y (c_s + S c_a))
+```
+
+otherwise it is **hashed** (Instant-NGP):
+
+```
+idx = ((c_x · 73856093) XOR (c_y · 19349663) XOR (c_s · 83492791) XOR (c_a · 2654435761)) mod 2^18
+```
+
+With the final setting levels 0–1 are dense (19 760 and 73 440 entries) and levels 2–5 are
+hashed (262 144 each): 1 141 776 entries × 8 = **9 134 208 parameters**. Without the altitude
+axis levels 0–3 are dense: 827 024 entries, 6 616 192 parameters.
+
+**Initialisation and gain.** `T_l ~ U(−1e-4, 1e-4)`. Adam moves a weight by about `lr` per step
+whatever the gradient scale, so the fixed output gain `g` is a learning-rate multiplier for
+the table (the rarely visited fine cells need it), and the optimiser is left untouched.
+
+### 15.2 The three reads
+
+All three reads stop the gradient on the positions (the map is trained, the trajectory it is
+read along is not differentiated through it). With `s_T` the last observed state and `P_h` the
+physics prior of §7:
+
+1. **At the aircraft**: `f_0 = F(λ_T, φ_T, ψ_T, h_T)`.
+2. **Along the prior** (`ahead`, default true): `f_h = F(λ, φ, ψ, h of P_h)` for each of the
+   `H` horizons. With `ahead = false`, `f_h = f_0`.
+3. **Dynamic collection** (`refine`): the first decoder layer proposes a trajectory with the
+   **same** residual head of §8.2,
+
+   $$ y^{(1)}_h=P_h+\mathrm{ContHead}\big([\mathrm{LN}(z^{(1)}_h)\,\Vert\,\kappa_h]\big)\odot s_h $$
+
+   the field is read again along it and added to the horizon tokens before the second
+   decoder layer:
+
+   $$ z^{(1)}_h\leftarrow z^{(1)}_h+\mathrm{MLP}_r\big([\mathcal F(y^{(1)}_h)\,\Vert\,\mathrm{state}\,\Vert\,\tau_h]\big) $$
+
+   `MLP_r = Linear_{48+4→144} → GELU → Linear_{144→144}`, last layer initialised at zero.
+   `refine` together with `n_modes > 0` raises an error (not implemented).
+
+### 15.3 Query conditioning
+
+$$ q^{\text{field}}_h=\mathrm{MLP}\big([\,f_h\,\Vert\,f_0\,\Vert\,\mathrm{state}\,\Vert\,\tau_h\,]\big),\qquad
+\mathrm{MLP}=\mathrm{Linear}_{2\cdot48+4\to144}\to\mathrm{GELU}\to\mathrm{Linear}_{144\to144} $$
+
+with `state = (norm_x_h, norm_x_vz, |v| / 900 km/h)` at the last observation and `τ_h` the
+normalised horizon. It is a **fourth block** of the horizon query (§6.2):
+
+$$ q_h=\mathrm{Linear}_{4D\to D}\big[\,c\ \Vert\ e_h\ \Vert\ \phi(t_h)\ \Vert\ q^{\text{field}}_h\,\big] $$
+
+The physics prior is therefore computed **before** the queries (same values as before: only the
+order of the computation changes).
+
+### 15.4 Loss
+
+With `refine`, one auxiliary term is added to §11: the positions of the proposed trajectory
+`y^(1)` with the same per-horizon normalisation as `L_pos`,
+
+$$ \mathcal L\leftarrow\mathcal L+0.5\cdot2.5\cdot\mathrm{SmoothL1}_{\beta=0.25}\Big(\frac{y^{(1)}_{pos}-y_{pos}}{\sigma_{attr}\odot h_{norm}}\Big) $$
+
+### 15.5 Parameters
+
+| module | parameters |
+|---|---:|
+| AeroTraj-Ultra (§12) | 1 276 983 |
+| field MLP (`Linear_{100→144}`, `Linear_{144→144}`) | 35 424 |
+| fourth block of the horizon query projection | 20 736 |
+| refine MLP (`Linear_{52→144}`, `Linear_{144→144}`) | 28 512 |
+| **network** | **1 361 655** |
+| map (6 levels, `n_alt = 5`) | 9 134 208 |
+| **total** | **10 495 863** |
+
+9.1 M of the 10.5 M parameters are the map (about 37 MB in float32).
+
+### 15.6 Options measured and not adopted
+
+Both stay in the code as documented ablations; **they are not part of the model**.
+
+* `model.track_frame`: the history is also given in the aircraft frame (along-track /
+  cross-track offsets and velocities, 4 more stem channels) and a second residual head
+  (`Linear_{D+8→D} → GELU → Linear_{D→4}`, zero-initialised) predicts along/cross-track
+  position and velocity residuals as a fraction of the distance flown (of the speed), rotated
+  back to `(λ, φ, v_x, v_y)` and added to the residual of §8.2.
+* `n_vz`: a vertical-rate axis of the field, `n_vz` nodes over `[−vz_max, vz_max]` m/s,
+  read with the **current** vertical rate, to separate departures from arrivals.
+
+### 15.7 Verification
+
+Section 10 of `test_conformance.py` checks:
+
+* with the options off the parameters are those of AeroTraj-Ultra (old checkpoints load);
+* the interpolation weights sum to one, also outside the region;
+* the heading axis is periodic;
+* a grid corner on a sector centre reads its own table row;
+* the aircraft-frame head is zero at initialisation, and a pure along-track (cross-track)
+  residual moves the point along-track (cross-track) only.
+
+### 15.8 Configuration
+
+| key (`model.airspace_field.*`) | default | final model |
+|---|---|---|
+| `n_levels` | 6 | 6 |
+| `base_res` | 0.5 | 0.5 |
+| `growth` | 2.0 | 2.0 |
+| `n_sectors` | 8 | 8 |
+| `feat_dim` | 8 | 8 |
+| `log2_table` | 18 | 18 |
+| `gain` | 10.0 | 10.0 |
+| `n_alt` | 0 | **5** |
+| `alt_max` | 1300.0 | 1300.0 |
+| `n_vz` | 0 | 0 |
+| `vz_max` | 10.0 | 10.0 |
+| `ahead` | true | true |
+| `refine` | false | **true** |
+
+Results: `docs/PAPER.md` §6.8, `docs/EXPERIMENTS.md` §6.15.

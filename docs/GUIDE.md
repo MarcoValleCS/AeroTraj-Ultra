@@ -66,6 +66,9 @@ python bench_run_10s.py --config config_365d_10s_bench.json
 python plot_bench_10s.py
 python make_table_mae_rmse.py
 
+# 6b. AeroTraj-Atlas (the airspace field) at the benchmark budget, 5 s grid
+python run.py --config config_365d_12pt_atlas_bench.json --fresh --skip-baselines
+
 # 7. the conformance and consistency checks
 python test_conformance.py
 python test_baselines.py
@@ -172,9 +175,13 @@ quotient uselessly noisy.
 
 The 10 s grid exists to test **how much history the model needs**: at a fixed 12-point
 window, halving the sampling rate doubles the history.  The measured verdict is in
-`PAPER.md` §3.1: the long window wins above 60 s (−7.3 % at 300 s) and loses below 30 s
-(+5.5 % at 10 s), with the crossover exactly where the error-floor analysis puts the
-boundary between sensor noise and intent.
+`PAPER.md` §3.1: on identical test windows the 10 s grid costs +5.3 % at 10–30 s and gains
+2.0 % at 300 s (−0.8 % on the mean of the six shared horizons), and a 24-point window at 5 s
+(`config_365d_24pt_bench.json` vs `config_365d_12pt_bench.json`) gains 0.67 %, less than the
+seed-to-seed spread.  The default stays 12 points at 5 s; the 10 s grid remains the
+protocol of the literature benchmark.  An earlier version reported −7.3 % at 300 s for the
+long window: that compared the two models on different window sets (see §9, *identical
+windows*).
 
 ### 4.4 Dataset signature
 
@@ -196,6 +203,7 @@ A one-line summary; the full catalogue, with the sources and the conformance rep
 | model | file | parameters | role |
 |---|---|---:|---|
 | **AeroTraj-Ultra** | `model.py` | 1 277 706 | the project model |
+| **AeroTraj-Atlas** | `model.py` | 10 495 863 (9 134 208 of them the map) | AeroTraj-Ultra + a learned airspace field |
 | FlightBERT++ V2, reference | `model.py` | 763 201 | the previous model of the project |
 | Kalman filter (CV) | `bench_baselines.py` | 6 | A3 of the FlightBERT paper |
 | IMM (CV/CA/CT) | `bench_baselines.py` | 25 | Blom & Bar-Shalom 1988 |
@@ -204,6 +212,18 @@ A one-line summary; the full catalogue, with the sources and the conformance rep
 | FlightBERT++ + ACoAtt | `bench_baselines.py` | 936 705 | ablation |
 | ASCENT, CFM, DDPM, attention-LSTM, IMM-residual | `bench_models.py` | 0.4–1.1 M | the 90-day benchmark |
 | CV (Doppler), CV least-squares | `model.py` | 0 | no-learning references |
+
+**AeroTraj-Atlas** is AeroTraj-Ultra plus an **airspace field**: a learned map of the
+airspace (a multi-resolution hash grid over longitude, latitude, a periodic heading axis and
+an altitude axis) that the horizon queries read at the aircraft, along the kinematic prior,
+and again along a trajectory proposed by the first decoder layer. It is not a new class: it
+is `AeroTrajUltra` with the config key `model.airspace_field` (final setting
+`{"n_alt": 5, "refine": true}`); without the key the model is AeroTraj-Ultra bit for bit.
+Measured on the Nov–Dec 2022 split, the same 60 000 windows: **723.3 m against 865.1 m** for
+AeroTraj-Ultra at the full budget (−16.4 %, better at every horizon), and **843.9 m against
+1 101.2 m** at the benchmark budget (−23.4 %, mean of two seeds). Specification:
+[`ARCHITECTURE.md`](ARCHITECTURE.md) §15; results: [`PAPER.md`](PAPER.md) §6.8 and the
+README §4.12.
 
 ---
 
@@ -247,6 +267,8 @@ the short ones.
 | 1.2 M samples / epoch, 150 epochs, `torch.compile` | RTX 4070 | ~2 h |
 | 400 k samples / epoch, 25 epochs, eager | RTX 4070 | ~9 min (`ours`), ~14 min (FlightBERT++) |
 | the whole 7-model benchmark | RTX 4070 | ~2.5 h |
+| AeroTraj-Atlas, 400 k samples / epoch, 25 epochs, eager (5 s grid) | RTX 4070 | 35.7 s/epoch (AeroTraj-Ultra: 23.5) |
+| AeroTraj-Atlas, 1.2 M samples / epoch, 150 epochs, `torch.compile` | RTX 4070 | 53.2 s/epoch, 2.39 h (AeroTraj-Ultra: 47.1 s, 1.98 h) |
 
 ---
 
@@ -258,7 +280,15 @@ FlightBERT paper's Table I) is produced by `make_table_mae_rmse.py`.
 
 **Cross-split evaluation.**  `eval_cross.py` evaluates a checkpoint on *both* test splits
 (spring and autumn), because a single 36-day window can over- or under-state a model by
-~10 % depending on the season (`PAPER.md` §6.3).
+~10 % depending on the season (`PAPER.md` §6.3).  `--split LABEL=config.json=split`
+(repeatable) replaces the two built-in test splits and feeds every model the last
+`inp_seq_len` points of the split's windows, so models with different window lengths are
+compared on identical anchors; the split must declare the longest window.  `eval_ckpt.py`
+slices the window the same way and also loads checkpoints that predate the `dt`
+parameterisation.
+
+**Seed.**  `run.py` takes the seed from the configuration's `seed` key (every committed
+configuration says 97).
 
 **Metrics.**  `run.compute_trajectory_metrics` returns, per horizon, the 3-D ECEF MDE, the
 2-D horizontal error, the altitude error and the per-attribute MAE/RMSE.  The 3-D distance
@@ -273,7 +303,10 @@ The details, the tables and the discussion are in `PAPER.md` §6.
 
 | setting | model | MDE |
 |---|---|---:|
+| 365 days, 5 s, 1.2 M × 150 | **AeroTraj-Atlas** | **723.3 m** (Nov–Dec; −16.4 %; March split not evaluated) |
 | 365 days, 5 s, 1.2 M × 150 | AeroTraj-Ultra | **790.2 m** (March split) · **865.1 m** (Nov–Dec) |
+| 365 days, 5 s, 400 k × 25, two seeds | AeroTraj-Atlas | 843.9 m (Nov–Dec, −23.4 %) |
+| 365 days, 5 s, 400 k × 25, two seeds | AeroTraj-Ultra | 1 101.2 m (Nov–Dec) |
 | 365 days, 5 s, 400 k × 150 | AeroTraj-Ultra | 847.3 m · 926.0 m |
 | 90 days, 5 s | AeroTraj-Ultra | 991.6 m |
 | 90 days, 5 s | FlightPREV (the previous model) | 1 495.8 m |
@@ -282,7 +315,9 @@ The details, the tables and the discussion are in `PAPER.md` §6.
 | 365 days, 10 s, same budget | Kalman filter (learned noise) | 2 069.4 m |
 
 Latency: 2.8–6.5 ms per aircraft with `torch.compile`, 19.3–20.7 ms eager
-(`PAPER.md` §8).
+(`PAPER.md` §8). AeroTraj-Atlas, on a harness that excludes the host-to-device copy (so not
+comparable with those numbers): 0.66 ms compiled against 0.65 ms for AeroTraj-Ultra, 42.2 ms
+eager against 17.4 ms.
 
 ---
 
@@ -301,6 +336,8 @@ These are the details that silently break a re-implementation if they are guesse
 | **horizon steps** | derived from the seconds and `dt` by `config_utils.resolve_horizon_steps()`, never hard-coded |
 | **decoding** | straight-through: the forward pass uses the thresholded bits, the backward pass the sigmoid |
 | **ECEF** | WGS-84 ellipsoid, semi-major 6378.137 km, flattening 1/298.257223563 |
+| **identical windows** | compare models on identical windows: models with different window lengths have different valid anchors, and the first window of every segment is 2.6× harder — use `eval_cross.py --split` with the config of the longest window |
+| **normalisation statistics** | the statistics stored with every dataset were computed in float32 and are wrong (on the 365-day set the stored latitude mean is 4.58° for a true 48.85°); they remain the **default** so that every published run stays reproducible. `python data_pipeline.py --config <cfg> --exact-norm-stats` adds float64 statistics (`train_norm_stats_exact`) without touching the stored ones, and the config key `data.norm_stats` selects them. Measured effect on accuracy: none (see §11) |
 
 ---
 
@@ -338,6 +375,10 @@ Two environment traps, both documented in `requirements.txt`:
 | `size mismatch for lstm.weight_hh_l1` when loading a checkpoint | the checkpoint belongs to a different width | `check_baselines.py`/`plot_trajectory_cases.py` pick the class from the file name; check which model the checkpoint is |
 | the model evaluates to ~10⁷ m | the bit encoding was decoded without the high bits | see `test_loss_balance.py`: a regression-only loss on a redundant binary code fails exactly this way |
 | a dataset is silently reused for a different step | should be impossible | the signature check; `verify_10s.py` prints it and aborts on a mismatch |
+| the stored latitude mean of a dataset is 4.58° (altitude mean 141.7, temperature 35.4 K, std of `vx` 271.6 km/h on the 365-day set) | `data_pipeline.py` computed the mean of a float32 array along axis 0: NumPy keeps a float32 running sum, which stops growing; the error grows with the dataset size | new builds use `exact_norm_stats` (float64, by chunks); for an existing dataset `python data_pipeline.py --config <cfg> --exact-norm-stats`, then `data.norm_stats` in the config. Effect on accuracy (benchmark budget, seed 97, `results_atlas/norm_stats_ab.json`): AeroTraj-Ultra 1 091.5 → 1 095.6 m (+0.38 %), AeroTraj-Atlas 846.5 → 843.8 m (−0.32 %), both inside the seed spread; the stored statistics stay the default |
+| `eval_ckpt.py` fails with missing codec buffers on an old checkpoint | strict load of a checkpoint older than the `dt` parameterisation (two codec buffers missing), including the one of the README's example command | fixed: those checkpoints now load; unexpected keys still fail |
+| a 12-point checkpoint evaluated with a 24-point config | the evaluation tools did not check the window length | fixed: `eval_cross.py` and `eval_ckpt.py` give each model the last `inp_seq_len` points |
+| `refine` with `n_modes > 0` raises an error | the airspace-field re-read and the multi-hypothesis head are not implemented together | use one or the other |
 
 ---
 
@@ -345,15 +386,18 @@ Two environment traps, both documented in `requirements.txt`:
 
 ```
     model and training
-      model.py                  the model, the Gray-Code codec, the losses, the classical baselines
+      model.py                  the model, the airspace field (AirspaceField), the Gray-Code
+                                codec, the losses, the classical baselines
       config_utils.py           horizon grid <-> time step
       run.py                    training loop, evaluation, plots
-      dataloader.py             memory-mapped sliding-window loader
-      data_pipeline.py          OpenSky acquisition and preprocessing
+      dataloader.py             memory-mapped sliding-window loader (data.norm_stats)
+      data_pipeline.py          OpenSky acquisition and preprocessing (--exact-norm-stats)
       inference.py              FastPredictor: compiled + inference_mode
       predict.py                inference on pre-processed windows
       eval_ckpt.py              evaluate a checkpoint on a split
       eval_cross.py             cross-test-set evaluation
+      eval_window_study.py      the window study on identical windows
+      eval_where_gain.py        two checkpoints by altitude / turn / level, paired bootstrap
 
     benchmarks
       bench_models.py           the five models of the 90-day benchmark
@@ -361,7 +405,8 @@ Two environment traps, both documented in `requirements.txt`:
       bench_run.py              harness for the 90-day benchmark
       bench_run_10s.py          harness for the 365-day / 10 s benchmark
       bench_experiments.py      post-hoc analyses
-      bench_latency*.py         latency and throughput
+      bench_latency*.py         latency and throughput (bench_latency_field.py: a variant
+                                on FastPredictor, input already on the GPU)
       bench_opt.py              inference-variant matrix
       bench_retrieval*.py       retrieval search experiments
       check_compile_quality.py  does compilation change the metric?
@@ -384,7 +429,8 @@ Two environment traps, both documented in `requirements.txt`:
       recover_noise_models.py   rebuild the learned noise of the filters
 
     tests
-      test_conformance.py       70 checks: frames, codecs, filters vs NumPy, metrics, losses, contracts
+      test_conformance.py       79 checks: frames, codecs, filters vs NumPy, metrics, losses,
+                                contracts, the airspace field, the dataset statistics
       test_baselines.py         unit tests of the re-implementations
       test_codec_10s.py         the Gray-Code lattices on the 10 s grid
       test_loss_balance.py      the BCE/MSE balance of the Hybrid Constrained loss
@@ -410,6 +456,10 @@ Two environment traps, both documented in `requirements.txt`:
       config_365d_1200k.json          the same, 1.2 M samples/epoch
       config_365d_10s.json            365 days, 10 s, horizons 10-300 s
       config_365d_10s_bench.json      the benchmark budget (25 x 400 k)
+      config_365d_12pt_bench.json     365 days, 5 s, 12 points, benchmark budget
+      config_365d_24pt_bench.json     the same with 24 points (120 s of history)
+      config_365d_12pt_atlas_bench.json  AeroTraj-Atlas, benchmark budget
+      config_365d_atlas_1200k.json    AeroTraj-Atlas, full budget (1.2 M x 150)
       config_90d_300s.json            90 days, the historical benchmark
       config_90d_300s_hyp.json        the same + the multi-hypothesis head
       config_90d_300s_regress.json    the score-regression variant
@@ -417,6 +467,13 @@ Two environment traps, both documented in `requirements.txt`:
       config_90d.json                 90 days, horizons 5-600 s
       config_90d_180s.json            the 90-day horizon control
       config_40d_gpu.json             the 40-day GPU control
+
+    results (text, committed) and weights (local, gitignored) of the latest studies
+      results_window/                 the window study (configs of the seed replicas in configs/)
+      results_atlas/                  the AeroTraj-Atlas ablation, seeds, where-gain, latency,
+                                      compile quality, norm-stats A/B (configs of every arm in configs/)
+      results_365_atlas/              AeroTraj-Atlas at the full budget, and the comparison with Ultra
+      checkpoints_window/, checkpoints_atlas/, checkpoints_365_atlas/   the corresponding weights
 ```
 
 The configurations of the 40/90/180-day runs are kept as **recipes**: the corresponding
@@ -427,7 +484,7 @@ datasets were removed to free 14.3 GB and can be rebuilt with `data_pipeline.py`
 ## 13. Tests
 
 ```
-python test_conformance.py    # 70 checks, ~1 min   — the models against their sources
+python test_conformance.py    # 79 checks           — the models against their sources
 python test_baselines.py      # 26 checks, ~1 min   — the re-implementations, one by one
 python test_codec_10s.py      # the codec on the 10 s grid
 python test_loss_balance.py   # the BCE/MSE experiment (400 training steps)
@@ -440,7 +497,9 @@ implementation, pins the IMM to a single mode and compares it with the same filt
 that the covariances stay positive semi-definite, that the coordinate frame is the
 identity, that the codecs round-trip within their lattice, that the metrics agree with an
 independent haversine computation, and that the published hyper-parameters are the ones we
-implement.
+implement.  Section 10 covers the AeroTraj-Atlas options: the airspace field against its own
+table and the aircraft frame against the geometry; section 11 checks the dataset statistics
+against a float64 reference.
 
 ---
 

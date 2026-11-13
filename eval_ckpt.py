@@ -31,6 +31,7 @@ from model import (
     FlightBERT_PP_V2_Baseline,
     HybridPhysicsConstrainedLoss,
     SmoothedConstantVelocityBaseline,
+    load_into_model,
 )
 from run import compute_trajectory_metrics
 
@@ -41,7 +42,11 @@ def load_model(ckpt_path: str, device: torch.device) -> tuple[AeroTrajUltra, Dic
     norm_mean = np.array(ckpt["norm_mean"], dtype=np.float32)
     norm_std = np.array(ckpt["norm_std"], dtype=np.float32)
     model = AeroTrajUltra(cfg, norm_mean, norm_std).to(device)
-    model.load_state_dict(ckpt["model_state_dict"])
+    # not strict on MISSING keys: the checkpoints older than the dt
+    # parameterisation lack the codec's horizon buffers, which the config rebuilds
+    _, unexpected = load_into_model(model, ckpt["model_state_dict"], strict=False)
+    if unexpected:
+        raise RuntimeError(f"{ckpt_path}: unexpected keys {list(unexpected)[:5]}")
     model.eval()
     return model, cfg, ckpt
 
@@ -70,7 +75,9 @@ def evaluate(
     preds, preds_cont, preds_kin, targs = [], [], [], []
     with torch.no_grad():
         for x_b, y_b in loader:
-            out = model(x_b)
+            # the model reads the window length it was trained with: the eval
+            # config may declare a longer one (same anchors, more history)
+            out = model(x_b[:, -model.inp_seq_len:])
             preds.append(out["pred"].cpu().numpy())
             preds_cont.append(out["pred_cont"].cpu().numpy())
             preds_kin.append(out["pred_kin"].cpu().numpy())

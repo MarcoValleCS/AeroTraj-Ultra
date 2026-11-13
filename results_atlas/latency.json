@@ -1,0 +1,26 @@
+{
+  "device": "NVIDIA GeForce RTX 4070",
+  "ultra": {
+    "inp_seq_len": 12,
+    "parameters": 1276983,
+    "none_b1_ms": 17.441,
+    "none_b4096_ms": 54.361,
+    "none_b4096_aircraft_per_s": 75348,
+    "reduce-overhead_b1_ms": 0.651,
+    "reduce-overhead_b4096_ms": 41.05,
+    "reduce-overhead_b4096_aircraft_per_s": 99780
+  },
+  "atlas": {
+    "inp_seq_len": 12,
+    "parameters": 10495863,
+    "none_b1_ms": 42.166,
+    "none_b4096_ms": 78.509,
+    "none_b4096_aircraft_per_s": 52172,
+    "reduce-overhead_b1_ms": 0.655,
+    "reduce-overhead_b4096_ms": 44.836,
+    "reduce-overhead_b4096_aircraft_per_s": 91355,
+    "parameters_network": 1361655,
+    "parameters_map": 9134208
+  },
+  "note": "FastPredictor, input already on the GPU, median of 3 blocks; RTX 4070, GPU idle"
+}

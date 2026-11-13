@@ -18,6 +18,8 @@ Sections
   7. losses                   zero at the target, kinematic term at equilibrium
   8. model contracts          output shapes, determinism, parameter counts
   9. spec conformance         the published hyper-parameters vs ours
+ 10. AeroTraj-Atlas options   the airspace field vs its own table, the aircraft frame
+ 11. dataset statistics       the normalisation constants vs a float64 reference
 
 Run:  python test_conformance.py
 Exit code 0 if every check passes.
@@ -585,6 +587,104 @@ def test_spec() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 10. AeroTraj-Atlas options: the airspace field and the aircraft frame
+# --------------------------------------------------------------------------- #
+def test_atlas() -> None:
+    section("10. AeroTraj-Atlas options")
+    import copy
+    import math
+    from model import AeroTrajUltra, AirspaceField
+
+    nm, ns = np.zeros(9, dtype=np.float32), np.ones(9, dtype=np.float32)
+    base = AeroTrajUltra(CFG10, nm, ns)
+    keys = list(base.state_dict())
+    check(not any(k.startswith(("field", "track_head")) for k in keys)
+          and base.horizon_proj.in_features == 3 * base.n_embd,
+          "options off: the parameters are those of AeroTraj-Ultra (old checkpoints load)")
+
+    # ---- the field against a NumPy reading of its own table ---------------- #
+    bounds = CFG10["data"]["region_bounds"]
+    f = AirspaceField(bounds, n_levels=3, base_res=1.0, n_sectors=8, feat_dim=2,
+                      log2_table=20, gain=1.0).to(DEV)          # every level dense
+    with torch.no_grad():
+        f.table.fill_(0.25)
+        lon = torch.tensor([-14.3, 0.07, 12.5, 34.9, 40.0], device=DEV)
+        lat = torch.tensor([30.2, 47.71, 51.0, 64.9, 10.0], device=DEV)
+        psi = torch.tensor([0.1, -2.0, 3.1, 6.0, 1.0], device=DEV)
+        o = f(lon, lat, psi)
+        check(float((o - 0.25).abs().max()) < 1e-6,
+              "field: the interpolation weights sum to one (points outside the region included)")
+        f.table.normal_()
+        check(bool(torch.allclose(f(lon, lat, psi), f(lon, lat, psi + 2 * math.pi), atol=1e-5)),
+              "field: the heading axis is periodic")
+        # exactly on a grid corner and on a sector centre the value is ONE row
+        lv, cx, cy, cs = 1, 37, 21, 5                           # level 1 = 2 cells per degree
+        r = float(f.res[lv])
+        o = f(torch.tensor([bounds["lon_min"] + cx / r], device=DEV),
+              torch.tensor([bounds["lat_min"] + cy / r], device=DEV),
+              torch.tensor([cs * 2 * math.pi / 8], device=DEV))
+        row = int(f.offset[lv]) + cx + int(f.nx[lv]) * (cy + int(f.ny[lv]) * cs)
+        err = float((o[0, lv * 2:(lv + 1) * 2] - f.table[row]).abs().max())
+        check(err < 1e-4, "field: a grid corner reads its own table row", f"max err {err:.1e}")
+
+    # ---- the aircraft frame: a pure cross-track residual is perpendicular -- #
+    cfg = copy.deepcopy(CFG10)
+    cfg["model"]["track_frame"] = True
+    m = AeroTrajUltra(cfg, nm, ns).to(DEV).eval()
+    vx, vy = 500.0, 600.0
+    x, _ = synthetic_window(B=4, vx_kmh=vx, vy_kmh=vy)
+    with torch.no_grad():
+        out = m(x)
+        check(bool(torch.equal(out["pred_cont"], out["pred_kin"])),
+              "aircraft frame: zero at initialisation (the model starts on the physics prior)")
+        speed = math.hypot(vx, vy)
+        t = torch.tensor(HSEC, device=DEV, dtype=torch.float32)
+        m_lon = 111320.0 * math.cos(math.radians(45.0))
+        for j, name in ((0, "along-track"), (1, "cross-track")):
+            m.track_head[-1].bias.zero_()
+            m.track_head[-1].bias[j] = 0.2
+            o = m(x)
+            de = (o["pred_cont"][0, :, 0] - o["pred_kin"][0, :, 0]) * m_lon
+            dn = (o["pred_cont"][0, :, 1] - o["pred_kin"][0, :, 1]) * 111132.0
+            along = (de * vx + dn * vy) / speed
+            right = (de * vy - dn * vx) / speed
+            want = 0.2 * 0.5 * speed / 3.6 * t                  # a fraction of the distance flown
+            got, other = (along, right) if j == 0 else (right, along)
+            rel = float(((got - want).abs() / want).max())
+            leak = float((other.abs() / want).max())
+            check(rel < 1e-3 and leak < 1e-3,
+                  f"aircraft frame: a {name} residual moves the point {name} only",
+                  f"rel err {rel:.1e}, leak {leak:.1e}")
+
+
+# --------------------------------------------------------------------------- #
+# 11. dataset statistics
+# --------------------------------------------------------------------------- #
+def test_norm_stats() -> None:
+    section("11. dataset statistics")
+    import os
+    import tempfile
+    from data_pipeline import exact_norm_stats
+
+    rng = np.random.default_rng(0)
+    pts = (rng.normal(49.0, 6.0, size=(3_000_000, 2))).astype(np.float32)
+    pts[:, 1] *= 5.0
+    fd, path = tempfile.mkstemp(suffix=".npy")
+    os.close(fd)
+    try:
+        np.save(path, pts)
+        st = exact_norm_stats(path, chunk=700_000)          # several chunks, the last one partial
+    finally:
+        os.remove(path)
+    ref_mean, ref_std = pts.mean(axis=0, dtype=np.float64), pts.std(axis=0, dtype=np.float64)
+    err = max(float(np.abs(np.array(st["mean"]) - ref_mean).max()),
+              float(np.abs(np.array(st["std"]) - ref_std).max()))
+    check(err < 1e-6, "chunked statistics match a float64 reference", f"max err {err:.1e}")
+    check(st["min"] == pts.min(axis=0).tolist() and st["max"] == pts.max(axis=0).tolist(),
+          "min and max are exact")
+
+
+# --------------------------------------------------------------------------- #
 if __name__ == "__main__":
     print("Conformance suite — AeroTraj-Ultra and its re-implementations")
     test_frames()
@@ -596,6 +696,8 @@ if __name__ == "__main__":
     test_losses()
     test_contracts()
     test_spec()
+    test_atlas()
+    test_norm_stats()
 
     print(f"\n{CHECKS - len(FAILURES)}/{CHECKS} checks passed")
     if FAILURES:
