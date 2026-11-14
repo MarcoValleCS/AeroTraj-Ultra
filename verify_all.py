@@ -28,6 +28,9 @@ RUNS = [
     ("365 d, 5 s, 400 k x 150", "results_365/evaluation_summary.json"),
     ("365 d, 5 s, 1.2 M x 150", "results_365/cross_budgets.json"),
     ("365 d, 10 s, 1.2 M x 150", "results_365_10s/evaluation_summary.json"),
+    ("365 d, 5 s, Atlas, 1.2 M x 150", "results_365_atlas/evaluation_summary.json"),
+    ("365 d, 5 s, Ultra, 400 k x 25", "results_window/T12_s97/evaluation_summary.json"),
+    ("365 d, 5 s, Atlas, 400 k x 25", "results_atlas/atlas_s97/evaluation_summary.json"),
 ]
 
 # ---------------------------------------------------------------- benchmarks

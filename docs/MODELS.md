@@ -5,7 +5,7 @@ is, where it comes from, what it contains, and how faithfully it reproduces its 
 It is the companion of `test_conformance.py`, which checks the claims numerically.
 
 ```
-python test_conformance.py        # 70 checks, exit code 0 when everything passes
+python test_conformance.py        # 79 checks, exit code 0 when everything passes
 ```
 
 The results of the models on the benchmark are in `docs/PAPER.md` (§6) and in
@@ -58,6 +58,36 @@ checks the parts that can be checked in isolation: the aircraft-centric frame is
 identity to machine precision, the Gray-Code encoder/decoder round-trips, the
 straight-through estimator carries a non-zero gradient, the hybrid loss is finite and its
 kinematic term is zero at a constant-velocity equilibrium.
+
+| | |
+|---|---|
+| **AeroTraj-Atlas** | `model.py` · `AeroTrajUltra` with `model.airspace_field` + `AirspaceField` |
+| source | this project; Instant-NGP (Müller, Evans, Schied & Keller, ACM Trans. Graph. 41(4), 2022) for the multi-resolution hash grid; MTR (Shi, Jiang, Dai & Schiele, NeurIPS 2022) for the map as the source of intent and the dynamic collection along a proposed trajectory |
+| parameters | **10 495 863** (5 s grid, 13 horizons) = network **1 361 655** (AeroTraj-Ultra 1 276 983 + field MLP 35 424 + fourth block of `horizon_proj` 20 736 + refine MLP 28 512) + map **9 134 208** |
+| input | 12 points × 9 channels, as AeroTraj-Ultra; the map is read at positions derived from them (the last observation, the kinematic prior, the proposed trajectory) |
+| output | `H × 6`, non-autoregressive, one forward pass |
+| specification | [`ARCHITECTURE.md`](ARCHITECTURE.md) §15 |
+| verification | L2 + L4 (section 10 of the conformance suite): with the options off the parameters are those of AeroTraj-Ultra; the interpolation weights sum to one, also outside the region; the heading axis is periodic; a grid corner reads its own table row; the aircraft-frame head is zero at initialisation and a pure along/cross-track residual moves the point along/cross-track only |
+
+AeroTraj-Atlas is not a new class: it is `AeroTrajUltra` with the config key
+`model.airspace_field`, a dict of `AirspaceField` keyword arguments plus the switches `ahead`
+(default true) and `refine` (default false); the final setting is
+`{"n_alt": 5, "refine": true}`. The field is a learned map of the airspace — 6 levels over
+longitude and latitude, a periodic heading axis of 8 sectors and an altitude axis of 5 nodes,
+8 features per node, dense tables for the coarse levels and a 2^18-entry hash for the fine
+ones — read at the aircraft, along the kinematic prior and, with `refine`, along a trajectory
+proposed by the first decoder layer; the reads enter the horizon queries as a fourth block.
+Without the key the model is AeroTraj-Ultra bit for bit (identical state dict and identical
+outputs in eval and train mode; every existing checkpoint loads). `refine` together with
+`n_modes > 0` raises an error: the combination is not implemented. The field has not been
+combined with the retrieval variant.
+
+**Two options implemented, measured and not adopted** (they stay in the code as documented
+ablations, benchmark budget, seed 97): `model.track_frame` — the history also given in the
+aircraft frame (along-track / cross-track) plus a second residual head working in that frame
+as a fraction of the distance flown — is +1.6 % alone and gives no gain with the field
+(902.4 vs 903.1 m); `n_vz` — a vertical-rate axis of the field, to separate departures from
+arrivals — gives 868.1 vs 865.2 m (+0.3 %) with more parameters and 18 % more time.
 
 ### 2.2 The literature re-implemented for the 365-day / 10 s benchmark
 
@@ -262,6 +292,7 @@ doubled. The step is now a constructor argument (`obs_dt`), fed from the config,
 | model | source | params | verification | status |
 |---|---|---:|---|---|
 | AeroTraj-Ultra | this project | 1 277 706 | L2 + L4 | conforms to `ARCHITECTURE.md` |
+| AeroTraj-Atlas | this project + Instant-NGP + MTR | 10 495 863 | L2 + L4 | conforms to `ARCHITECTURE.md` §15 |
 | Kalman filter (CV) | FlightBERT A3 | 6 | L1 + L2 | conforms (learned noise declared) |
 | IMM | Blom & Bar-Shalom 1988 | 25 | L1 + L2 | conforms (learned noise declared) |
 | LSTM regression | FlightBERT A1 | 376 100 | L4 | conforms |
@@ -286,6 +317,10 @@ doubled. The step is now a constructor argument (`obs_dt`), fed from the config,
 | 5 | the ACoAtt ablation changed the model width too | `FlightBERTPPV2Faithful` | the spec table (L3) | the measured effect mixed two causes: it read −9.2 % with the confound and −1.8 % once both variants were 128 wide |
 | 6 | the FlightBERT++ trained at 1e-3 against the reference's 1e-4 | `bench_run_10s.LR_OVERRIDE` | the spec table (L3) | a declared protocol deviation, now corrected |
 | 7 | the delta decoder accepted a wrong number of horizon steps with a cryptic error | `GrayCodeCodec.decode_horizon_deltas_ste` | the API test | a latent misuse hazard; the shape is now asserted |
+| 8 | the normalisation statistics were computed as the mean of a float32 array along axis 0, whose float32 running sum stops growing | `data_pipeline.py` | the stored latitude mean (4.58° for a true 48.85° on the 365-day set) was read while preparing a realistic input for the latency benchmark | every dataset had its own wrong constants (also altitude, temperature, std of `vx`); fixed with `exact_norm_stats` (float64, by chunks) and `--exact-norm-stats`, selected by `data.norm_stats`. Accuracy effect none (+0.38 % Ultra, −0.32 % Atlas, inside the seed spread), so the stored statistics stay the default |
+| 9 | strict load of the checkpoints older than the `dt` parameterisation (two codec buffers missing) | `eval_ckpt.py` | the example command of the README failed | those checkpoints could not be evaluated; they now load, and unexpected keys still fail |
+| 10 | the evaluation tools did not check the window length | `eval_cross.py`, `eval_ckpt.py` | a code audit before the 24-point experiment | a 12-point checkpoint evaluated with a 24-point config silently received 24 points; each model now gets the last `inp_seq_len` points |
+| 11 | models with different window lengths were compared on different windows | the window study (`eval_cross.py --split`) | the 24-point A/B gave −6.4 % in validation and −0.28 % on identical test windows | the earlier 10 s-grid result (−7.3 % at 300 s) was a test-set artefact; models are now compared on identical windows |
 
 ---
 

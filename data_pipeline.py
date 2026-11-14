@@ -524,19 +524,9 @@ class PyOpenSkyTrajectoryPipeline:
 
             if split_name == "train":
                 # Normalization statistics computed on the TRAIN split only
-                train_pts = np.load(pts_path, mmap_mode="r")
-                mean_vec = np.asarray(train_pts).mean(axis=0).tolist()
-                std_vec = np.maximum(np.asarray(train_pts).std(axis=0), 1e-5).tolist()
-                min_vec = np.asarray(train_pts).min(axis=0).tolist()
-                max_vec = np.asarray(train_pts).max(axis=0).tolist()
-                summary_stats["train_norm_stats"] = {
-                    "mean": mean_vec,
-                    "std": std_vec,
-                    "min": min_vec,
-                    "max": max_vec,
-                }
-                del train_pts
-                gc.collect()
+                # (exact: see exact_norm_stats for the float32 defect it replaces)
+                summary_stats["train_norm_stats"] = exact_norm_stats(pts_path)
+                summary_stats["train_norm_stats_exact"] = summary_stats["train_norm_stats"]
 
         summary_stats["total_pipeline_seconds"] = round(time.time() - t_start_all, 2)
         with open(stats_file, "w", encoding="utf-8") as f:
@@ -550,13 +540,57 @@ class PyOpenSkyTrajectoryPipeline:
         return summary_stats
 
 
+def exact_norm_stats(points_path, chunk: int = 4_000_000) -> Dict[str, Any]:
+    """
+    Mean / std / min / max of a points file, accumulated in float64 by chunks.
+
+    The statistics used to be `np.asarray(points).mean(axis=0)` on the float32
+    array.  Along axis 0 NumPy keeps a float32 running sum per column, and past
+    2**24 times the typical value the additions are rounded away: on the 242 M
+    training points of the 365-day set the stored latitude mean is 4.58 deg for
+    a true 49.4, the temperature 35 K for 233 K, and the velocity std is halved.
+    The error grows with the dataset, so every dataset size had its own wrong
+    constants.
+    """
+    pts = np.load(points_path, mmap_mode="r")
+    n, s, ss = 0, 0.0, 0.0
+    lo, hi = np.full(pts.shape[1], np.inf), np.full(pts.shape[1], -np.inf)
+    for i in range(0, len(pts), chunk):
+        c = np.asarray(pts[i:i + chunk], dtype=np.float64)
+        n += len(c)
+        s = s + c.sum(axis=0)
+        ss = ss + (c * c).sum(axis=0)
+        lo, hi = np.minimum(lo, c.min(axis=0)), np.maximum(hi, c.max(axis=0))
+    mean = s / n
+    std = np.sqrt(np.maximum(ss / n - mean * mean, 0.0))
+    return {"mean": mean.tolist(), "std": np.maximum(std, 1e-5).tolist(),
+            "min": lo.tolist(), "max": hi.tolist()}
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Build the preprocessed OpenSky trajectory dataset.")
     parser.add_argument("--config", type=str, default="config.json")
     parser.add_argument("--rebuild", action="store_true", help="Force a full re-download/rebuild")
+    parser.add_argument("--exact-norm-stats", action="store_true",
+                        help="Add `train_norm_stats_exact` to the stats of an EXISTING dataset "
+                             "(the stored `train_norm_stats` are kept: the published runs used them)")
     args = parser.parse_args()
+
+    if args.exact_norm_stats:
+        with open(args.config, "r", encoding="utf-8") as f:
+            data_dir = Path(json.load(f)["data"]["data_dir"])
+        stats_path = data_dir / "dataset_stats.json"
+        with open(stats_path, "r", encoding="utf-8") as f:
+            stats = json.load(f)
+        stats["train_norm_stats_exact"] = exact_norm_stats(data_dir / "train_points.npy")
+        with open(stats_path, "w", encoding="utf-8") as f:
+            json.dump(stats, f, indent=2)
+        for k in ("mean", "std"):
+            print(k, "stored:", np.round(stats["train_norm_stats"][k], 2).tolist())
+            print(k, "exact :", np.round(stats["train_norm_stats_exact"][k], 2).tolist())
+        raise SystemExit(0)
 
     pipeline = PyOpenSkyTrajectoryPipeline(args.config)
     pipeline.build_dataset_splits(force_rebuild=args.rebuild)

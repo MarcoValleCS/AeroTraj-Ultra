@@ -45,6 +45,11 @@ def evaluate(model, ds, hs, dev):
     preds, targs = [], []
     for s in range(0, len(ds.anchors), BS):
         x, y = ds.get_batch_from_anchors(ds.anchors[s:s + BS], dev)
+        # each model reads ITS OWN window length out of the split's windows, so
+        # models with different inp_seq_len are compared on identical anchors
+        # (the split must declare the longest window of the models compared)
+        assert x.shape[1] >= model.inp_seq_len, "split window shorter than the model's"
+        x = x[:, -model.inp_seq_len:]
         preds.append(model(x)["pred"].float().cpu().numpy())
         targs.append(y.cpu().numpy())
     P = np.concatenate(preds); T = np.concatenate(targs)
@@ -56,9 +61,18 @@ def main() -> None:
     ap.add_argument("--model", action="append", default=None,
                     help="NAME=config.json=checkpoint.pt (repeatable); "
                          "when given it replaces the built-in pair")
+    ap.add_argument("--split", action="append", default=None,
+                    help="LABEL=config.json=split (repeatable); when given it "
+                         "replaces the built-in pair of test splits")
     ap.add_argument("--max-samples", type=int, default=MAXW)
     ap.add_argument("--out", default="results_365/cross_90d_vs_365d.json")
     args = ap.parse_args()
+
+    global SPLITS
+    if args.split:
+        SPLITS = [tuple(s.split("=")) for s in args.split]
+        if any(len(s) != 3 for s in SPLITS):
+            raise SystemExit(f"--split must be LABEL=config=split, got {args.split!r}")
 
     models = DEFAULT_MODELS
     if args.model:
@@ -79,8 +93,9 @@ def main() -> None:
     for name, cfg_path, ckpt_path in models:
         cfg = json.load(open(cfg_path, encoding="utf-8"))
         hs = cfg["window"]["horizon_seconds"]
-        # norm stats from the checkpoint's own training split
-        tr = FlightSlidingWindowDataset("train", cfg_path, max_samples=8)
+        # norm stats of the checkpoint's own dataset: every split object reads the
+        # TRAIN statistics from dataset_stats.json, and the test file is 8x smaller
+        tr = FlightSlidingWindowDataset("test", cfg_path, max_samples=8)
         model = AeroTrajUltra(cfg, tr.norm_mean, tr.norm_std).to(dev).eval()
         sd = torch.load(ckpt_path, map_location=dev, weights_only=False)
         sd = normalize_state_dict(sd.get("model_state_dict", sd))

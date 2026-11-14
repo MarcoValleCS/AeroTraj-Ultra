@@ -523,6 +523,114 @@ def local_frame(x_obs: torch.Tensor):
     return lon0, lat0, alt0, heading, m_per_deg_lon
 
 
+class AirspaceField(nn.Module):
+    """
+    Learned map of the airspace: an intent prior without a neighbour search.
+
+    A multi-resolution grid of feature vectors over (lon, lat, heading sector)
+    and, optionally, altitude and vertical rate, multilinearly interpolated;
+    the heading axis is periodic.  The coarse levels are dense tables; the
+    levels that do not fit `2**log2_table` entries are hashed (Instant-NGP,
+    Mueller et al. 2022).  The model queries it ALONG ITS OWN KINEMATIC PRIOR,
+    so the query of horizon t+h reads what traffic with this heading and level
+    usually does at the place it is about to reach - the role an HD map plays
+    for road agents (dynamic map collection, MTR, Shi et al. 2022), learned
+    here from the trajectories because the route structure is not in the data.
+
+    Specification: docs/ARCHITECTURE.md section 15.  AeroTraj-Atlas is
+    AeroTraj-Ultra with `model.airspace_field = {"n_alt": 5, "refine": true}`;
+    the vertical-rate axis (`n_vz`) was measured and brings nothing.
+    """
+
+    def __init__(self, bounds: Dict, n_levels: int = 6, base_res: float = 0.5,
+                 growth: float = 2.0, n_sectors: int = 8, feat_dim: int = 8,
+                 log2_table: int = 18, gain: float = 10.0,
+                 n_alt: int = 0, alt_max: float = 1300.0,
+                 n_vz: int = 0, vz_max: float = 10.0) -> None:
+        super().__init__()
+        self.lon_min, self.lat_min = float(bounds["lon_min"]), float(bounds["lat_min"])
+        lon_span = float(bounds["lon_max"]) - self.lon_min
+        lat_span = float(bounds["lat_max"]) - self.lat_min
+        self.n_sectors = int(n_sectors)
+        # optional flight-level axis (n_alt nodes, 0 = no axis): arrivals and
+        # overflights cross the same cell on the same heading and do different
+        # things.  alt_max is in the model's altitude unit (10 m).
+        self.n_alt, self.alt_max = int(n_alt), float(alt_max)
+        # optional vertical-rate axis (n_vz nodes over [-vz_max, vz_max] m/s):
+        # departures and arrivals are different flows through the same airspace
+        self.n_vz, self.vz_max = int(n_vz), float(vz_max)
+        # Adam moves a weight by ~lr per step whatever the gradient scale, so a
+        # fixed output gain IS a learning-rate multiplier for the table (the
+        # rarely visited fine cells need it) and the optimiser stays untouched.
+        self.gain = float(gain)
+        res = [base_res * growth ** lv for lv in range(n_levels)]   # cells per degree
+        nx = [int(math.ceil(lon_span * r)) + 1 for r in res]        # grid corners
+        ny = [int(math.ceil(lat_span * r)) + 1 for r in res]
+        full = [a * b * self.n_sectors * max(1, self.n_alt) * max(1, self.n_vz)
+                for a, b in zip(nx, ny)]
+        cap = 2 ** int(log2_table)                                # power of two: the hash is masked
+        size = [min(f, cap) for f in full]
+        self.register_buffer("res", torch.tensor(res, dtype=torch.float32))
+        self.register_buffer("nx", torch.tensor(nx, dtype=torch.long))
+        self.register_buffer("ny", torch.tensor(ny, dtype=torch.long))
+        self.register_buffer("dense", torch.tensor([f <= cap for f in full]))
+        self.register_buffer("size", torch.tensor(size, dtype=torch.long))
+        self.register_buffer(
+            "offset", torch.tensor([sum(size[:lv]) for lv in range(n_levels)], dtype=torch.long))
+        self.table = nn.Parameter(torch.empty(sum(size), int(feat_dim)).uniform_(-1e-4, 1e-4))
+        self.out_dim = n_levels * int(feat_dim)
+
+    def forward(self, lon: torch.Tensor, lat: torch.Tensor, heading: torch.Tensor,
+                alt: Optional[torch.Tensor] = None, vz: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """lon, lat [deg], heading [rad, any branch], alt [10 m], vz [m/s], same shape [...] -> [..., out_dim]"""
+        x = ((lon - self.lon_min).unsqueeze(-1) * self.res).clamp(min=0.0)   # [..., L]
+        y = ((lat - self.lat_min).unsqueeze(-1) * self.res).clamp(min=0.0)
+        # a point outside the region is read at the border (the prior can leave it)
+        ix = torch.minimum(x.floor(), (self.nx - 2).to(x.dtype))
+        iy = torch.minimum(y.floor(), (self.ny - 2).to(y.dtype))
+        fx, fy = (x - ix).clamp(max=1.0), (y - iy).clamp(max=1.0)
+        ix, iy = ix.long(), iy.long()
+        s = torch.remainder(heading / (2.0 * math.pi), 1.0) * self.n_sectors
+        s0 = s.floor()
+        fs = (s - s0).unsqueeze(-1)
+        s0 = s0.long()
+        state_corners = ((0, 1.0),)                               # (node, weight): no extra axis
+        if self.n_alt:
+            # nodes at alt_max * (k / (n_alt - 1))**2: finer near the ground,
+            # where the procedures are stacked
+            a = (alt / self.alt_max).clamp(0.0, 1.0).sqrt() * (self.n_alt - 1)
+            a0 = a.floor().clamp(max=self.n_alt - 2)
+            fa = (a - a0).unsqueeze(-1)
+            a0 = a0.long().unsqueeze(-1)
+            state_corners = ((a0, 1.0 - fa), (a0 + 1, fa))
+        if self.n_vz:
+            v = ((vz / self.vz_max).clamp(-1.0, 1.0) * 0.5 + 0.5) * (self.n_vz - 1)
+            v0 = v.floor().clamp(max=self.n_vz - 2)
+            fv = (v - v0).unsqueeze(-1)
+            v0 = v0.long().unsqueeze(-1)
+            n_a = max(1, self.n_alt)
+            state_corners = tuple((c + n_a * cv, w * wv) for c, w in state_corners
+                                  for cv, wv in ((v0, 1.0 - fv), (v0 + 1, fv)))
+        out = 0.0
+        for dx in (0, 1):
+            wx = fx if dx else 1.0 - fx
+            for dy in (0, 1):
+                wy = fy if dy else 1.0 - fy
+                for ds in (0, 1):
+                    ws = fs if ds else 1.0 - fs
+                    cx, cy = ix + dx, iy + dy
+                    cs = ((s0 + ds) % self.n_sectors).unsqueeze(-1)          # periodic
+                    for ca, wa in state_corners:
+                        idx = torch.where(
+                            self.dense,
+                            cx + self.nx * (cy + self.ny * (cs + self.n_sectors * ca)),
+                            ((cx * 73856093) ^ (cy * 19349663) ^ (cs * 83492791)
+                             ^ (ca * 2654435761)) & (self.size - 1),
+                        ) + self.offset
+                        out = out + (wx * wy * ws * wa).unsqueeze(-1) * self.table[idx]
+        return out.flatten(-2) * self.gain
+
+
 class AeroTrajUltra(nn.Module):
     """
     AeroTraj-Ultra (FlightBERT++ V3):
@@ -569,7 +677,13 @@ class AeroTrajUltra(nn.Module):
             attr_dim=int(m_cfg["attr_embed_dim"]),
             out_dim=self.n_embd,
         )
-        self.conv_stem = TokenConvEmbedding(self.n_embd + 15, self.n_embd)
+        # track_frame (optional; measured and NOT adopted, +1.6 % alone and no
+        # gain with the airspace field): the history is ALSO given in the frame
+        # of the aircraft (along-track / cross-track) and a second residual
+        # head works in that frame, as a fraction of the distance flown.
+        self.track_frame = bool(m_cfg.get("track_frame", False))
+        self.conv_stem = TokenConvEmbedding(
+            self.n_embd + 15 + (4 if self.track_frame else 0), self.n_embd)
         self.enc_pos_emb = SinusoidalPositionalEncoding(self.n_embd, self.dropout, max_len=128)
 
         # 3. Pre-LN Transformer Encoder + Attention Feature Aggregation
@@ -614,11 +728,39 @@ class AeroTrajUltra(nn.Module):
         if self.use_retrieval:
             self.retr_proj = nn.Linear(int(m_cfg.get("retrieval_dim", 4)), self.n_embd)
             self.retr_attn = nn.Linear(self.n_embd, 1)
-            self.horizon_proj = nn.Linear(self.n_embd * 4, self.n_embd)
-        else:
-            self.horizon_proj = nn.Linear(self.n_embd * 3, self.n_embd)
+        # airspace_field (AeroTraj-Atlas; absent = AeroTraj-Ultra, bit for bit):
+        # {} or the AirspaceField keyword arguments.  The horizon queries receive
+        # one more block, the learned map read along the kinematic prior.
+        f_cfg = m_cfg.get("airspace_field")
+        self.field = None
+        if f_cfg is not None:
+            f_cfg = dict(f_cfg)
+            # ahead=False: the map is read at the aircraft only (the ablation of
+            # "reading where it is going"); refine=True: it is read again along
+            # the trajectory proposed by the first decoder layer
+            self.field_ahead = bool(f_cfg.pop("ahead", True))
+            self.field_refine = bool(f_cfg.pop("refine", False))
+            self.field = AirspaceField(cfg["data"]["region_bounds"], **f_cfg)
+            self.field_mlp = nn.Sequential(
+                nn.Linear(2 * self.field.out_dim + 4, self.n_embd),
+                nn.GELU(),
+                nn.Linear(self.n_embd, self.n_embd),
+            )
+            if self.field_refine:
+                self.refine_mlp = nn.Sequential(
+                    nn.Linear(self.field.out_dim + 4, self.n_embd),
+                    nn.GELU(),
+                    nn.Linear(self.n_embd, self.n_embd),
+                )
+                nn.init.zeros_(self.refine_mlp[-1].weight)
+                nn.init.zeros_(self.refine_mlp[-1].bias)
+        # block order: context, horizon, time, [retrieval], [airspace field]
+        self.horizon_proj = nn.Linear(
+            self.n_embd * (3 + int(self.use_retrieval) + int(self.field is not None)), self.n_embd)
 
         self.n_modes = int(m_cfg.get("n_modes", 0))
+        if self.n_modes > 0 and self.field is not None and self.field_refine:
+            raise ValueError("airspace_field.refine is not implemented together with n_modes > 0")
         # how the score head is trained: "ce" -> higher score = better (argmax),
         # "regress" -> the score predicts the log-error (argmin)
         self.hyp_score_mode = str(cfg.get("training", {}).get("hyp_score_mode", "ce"))
@@ -667,6 +809,16 @@ class AeroTrajUltra(nn.Module):
         # Initialize last layer of residual head near zero so training starts from the exact kinematic prior!
         nn.init.zeros_(self.cont_head[-1].weight)
         nn.init.zeros_(self.cont_head[-1].bias)
+        if self.track_frame:
+            # Head B': (along, cross) position and velocity residuals in the
+            # aircraft frame, zero at initialisation like Head B
+            self.track_head = nn.Sequential(
+                nn.Linear(self.n_embd + 8, self.n_embd),
+                nn.GELU(),
+                nn.Linear(self.n_embd, 4),
+            )
+            nn.init.zeros_(self.track_head[-1].weight)
+            nn.init.zeros_(self.track_head[-1].bias)
 
         # Head C: MAF-Net-Inspired Differentiable Filter Gate (Pang et al., AAMAS 2026)
         self.maf_gate = nn.Sequential(
@@ -688,6 +840,16 @@ class AeroTrajUltra(nn.Module):
         self.register_buffer(
             "kin_disp_scale", torch.tensor([1.0, 1.0, 100.0, 200.0, 200.0, 10.0], dtype=torch.float32)
         )
+
+    def _read_field(self, state: torch.Tensor, vz: torch.Tensor) -> torch.Tensor:
+        """
+        The airspace field at the position / heading / altitude of `state` [..., 6].
+        `vz` is the CURRENT vertical rate (broadcast to `state`): it says which
+        flow the aircraft belongs to, wherever along the trajectory the map is read.
+        """
+        return self.field(state[..., 0], state[..., 1],
+                          torch.atan2(state[..., 3], state[..., 4]), state[..., 2],
+                          vz.expand(state.shape[:-1]))
 
     def forward(
         self,
@@ -722,7 +884,23 @@ class AeroTrajUltra(nn.Module):
         acoatt_feat = self.acoatt_emb(gc_inputs, norm_x, rel_x)  # [B, T, D]
 
         # Concatenate continuous relative kinematics + weather & pass through Conv1d Stem + Encoder
-        enc_in = self.conv_stem(torch.cat([acoatt_feat, norm_x, rel_x], dim=-1))
+        stem_in = [acoatt_feat, norm_x, rel_x]
+        if self.track_frame:
+            # the same history in the aircraft frame: along = (sin psi, cos psi),
+            # cross (to the right) = (cos psi, -sin psi), in (east, north)
+            _, _, _, psi, m_lon = local_frame(x_obs)                     # [B, 1]
+            sin_p, cos_p = torch.sin(psi), torch.cos(psi)
+            east = rel_pos[..., 0] * m_lon                                # [B, T] metres
+            north = rel_pos[..., 1] * 111132.0
+            vx_k, vy_k = x_6d[..., 3], x_6d[..., 4]                       # km/h
+            v_along = vx_k * sin_p + vy_k * cos_p
+            stem_in.append(torch.stack([
+                (east * sin_p + north * cos_p) / 1.0e4,   # along-track position (10 km)
+                (east * cos_p - north * sin_p) / 1.0e3,   # cross-track position (1 km)
+                (v_along - v_along[:, -1:]) / 200.0,      # along-track speed change
+                (vx_k * cos_p - vy_k * sin_p) / 200.0,    # cross-track speed, i.e. the turn
+            ], dim=-1))
+        enc_in = self.conv_stem(torch.cat(stem_in, dim=-1))
         enc_in = self.enc_pos_emb(enc_in)
         enc_out = self.encoder(enc_in)  # [B, T, D]
         context_vec = self.feature_agg(enc_out)  # [B, D]
@@ -747,21 +925,49 @@ class AeroTrajUltra(nn.Module):
         t_emb = self.time_mlp(time_feats)  # [B, H, D]
 
         ctx_rep = context_vec.unsqueeze(1).expand(-1, self.horizon, -1)  # [B, H, D]
+        q_blocks = [ctx_rep, h_emb, t_emb]
         if self.use_retrieval:
             if retr_ctx is not None:
                 retr_enc = self.encode_retrieval(retr_ctx)                # [B, H, D]
             else:
                 retr_enc = torch.zeros(B, self.horizon, self.n_embd,
                                        device=device, dtype=x_obs.dtype)
-            horizon_queries = self.horizon_proj(
-                torch.cat([ctx_rep, h_emb, t_emb, retr_enc], dim=-1)
-            )
-        else:
-            horizon_queries = self.horizon_proj(torch.cat([ctx_rep, h_emb, t_emb], dim=-1))
+            q_blocks.append(retr_enc)
+
+        # 4. Physics-Informed Kinematic Prior (before the queries: the airspace
+        #    field is read along it)
+        pred_kin = self.kinematic_prior(x_obs)  # [B, H, 6]
+        kin_disp_norm = (pred_kin - last_obs_6d.unsqueeze(1)) / self.kin_disp_scale.view(1, 1, 6)
+        horizon_scale = torch.cat(
+            [
+                self.t_norm.view(1, self.horizon, 1).expand(B, -1, 3),
+                torch.sqrt(self.t_norm).view(1, self.horizon, 1).expand(B, -1, 3),
+            ],
+            dim=-1,
+        ) * self.res_base_scale.view(1, 1, 6)
+        if self.field is not None:
+            vz_now = last_obs_6d[:, 5:6]                                 # [B, 1]
+            f_0 = self._read_field(last_obs_6d, vz_now[:, 0]).unsqueeze(1).expand(-1, self.horizon, -1)
+            f_h = self._read_field(pred_kin.detach(), vz_now) if self.field_ahead else f_0
+            # the map is shared by every speed (and flight level, without the
+            # altitude axis): the state lets the projection pick the traffic
+            # flow this aircraft belongs to
+            field_state = torch.stack([
+                norm_x[:, -1, 2], norm_x[:, -1, 5],
+                torch.hypot(last_obs_6d[:, 3], last_obs_6d[:, 4]) / 900.0,
+            ], dim=-1).unsqueeze(1).expand(-1, self.horizon, -1)
+            q_blocks.append(self.field_mlp(torch.cat([
+                f_h,                 # [B, H, F] where it is going
+                f_0,                 # where it is
+                field_state,
+                t_f,
+            ], dim=-1)))
+        horizon_queries = self.horizon_proj(torch.cat(q_blocks, dim=-1))
 
         dec_full_in = self.dec_pos_emb(torch.cat([dec_prefix_emb, horizon_queries], dim=1))
         hyp_pred = None
         hyp_score = None
+        pred_aux = None
         if self.n_modes > 0:
             # ---- multi-hypothesis: append the mode queries to the sequence ----
             mode_q = self.mode_queries.unsqueeze(0).expand(B, -1, -1)      # [B, K, D]
@@ -783,13 +989,23 @@ class AeroTrajUltra(nn.Module):
             dec_out = self.ln_f(self.decoder(tgt=dec_full_in, memory=enc_out, tgt_mask=mask))
             dec_h = dec_out[:, L_pref:L_pref + L_hor, :]                     # [B, H, D]
             mode_tok = dec_out[:, L_pref + L_hor:, :]                         # [B, K, D]
+        elif self.field is not None and self.field_refine:
+            # dynamic collection: the first decoder layer proposes a trajectory
+            # (same residual head, supervised by the auxiliary term of the loss)
+            # and the map is read again along IT instead of along the prior
+            h = self.decoder.layers[0](dec_full_in, enc_out)
+            hq = h[:, -self.horizon:]
+            pred_aux = pred_kin + self.cont_head(
+                torch.cat([self.ln_f(hq), kin_disp_norm], dim=-1)) * horizon_scale
+            hq = hq + self.refine_mlp(torch.cat(
+                [self._read_field(pred_aux.detach(), vz_now), field_state, t_f], dim=-1))
+            h = torch.cat([h[:, :-self.horizon], hq], dim=1)
+            for layer in self.decoder.layers[1:]:
+                h = layer(h, enc_out)
+            dec_h = self.ln_f(h)[:, -self.horizon:]
         else:
             dec_out = self.ln_f(self.decoder(tgt=dec_full_in, memory=enc_out))
             dec_h = dec_out[:, -self.horizon :, :]  # [B, H, D]
-
-        # 4. Physics-Informed Kinematic Prior
-        pred_kin = self.kinematic_prior(x_obs)  # [B, H, 6]
-        kin_disp_norm = (pred_kin - last_obs_6d.unsqueeze(1)) / self.kin_disp_scale.view(1, 1, 6)
 
         # 5. Gray-Code Multi-Binary Classification Head + Differentiable STE Decode
         raw_gc_logits = self.gc_head(dec_h)  # [B, H, total_delta_bits]
@@ -800,15 +1016,29 @@ class AeroTrajUltra(nn.Module):
 
         # 6. Continuous Residual Head + MAF-Net-Inspired Differentiable Filter Gate
         dec_aug = torch.cat([dec_h, kin_disp_norm], dim=-1)
-        horizon_scale = torch.cat(
-            [
-                self.t_norm.view(1, self.horizon, 1).expand(B, -1, 3),
-                torch.sqrt(self.t_norm).view(1, self.horizon, 1).expand(B, -1, 3),
-            ],
-            dim=-1,
-        ) * self.res_base_scale.view(1, 1, 6)
-
         cont_res = self.cont_head(dec_aug) * horizon_scale
+        if self.track_frame:
+            speed = torch.hypot(last_obs_6d[:, 3:4], last_obs_6d[:, 4:5])        # km/h [B, 1]
+            dist = speed / 3.6 * self.horizon_sec.view(1, -1)                     # metres flown [B, H]
+            east = (pred_kin[..., 0] - last_obs_6d[:, None, 0]) * m_lon
+            north = (pred_kin[..., 1] - last_obs_6d[:, None, 1]) * 111132.0
+            prior_track = (torch.stack([east * sin_p + north * cos_p,
+                                        east * cos_p - north * sin_p], dim=-1)
+                           / dist.clamp(min=1.0).unsqueeze(-1)).clamp(-2.0, 2.0)
+            tr = self.track_head(torch.cat([dec_aug, prior_track], dim=-1))       # [B, H, 4]
+            # residuals as a fraction of the distance flown (of the speed): at
+            # rest the frame is undefined and this head switches itself off
+            p_al, p_cr = tr[..., 0] * 0.5 * dist, tr[..., 1] * 0.5 * dist         # metres
+            v_al, v_cr = tr[..., 2] * 0.5 * speed, tr[..., 3] * 0.5 * speed       # km/h
+            zero = torch.zeros_like(p_al)
+            cont_res = cont_res + torch.stack([
+                (p_al * sin_p + p_cr * cos_p) / m_lon,
+                (p_al * cos_p - p_cr * sin_p) / 111132.0,
+                zero,
+                v_al * sin_p + v_cr * cos_p,
+                v_al * cos_p - v_cr * sin_p,
+                zero,
+            ], dim=-1)
         pred_cont = pred_kin + cont_res
 
         # MAF Gate: fuses Gray-Code MBC trajectory within a differentiable trust region
@@ -835,6 +1065,8 @@ class AeroTrajUltra(nn.Module):
             "gc_probs": gc_probs_tuple,
             "gc_logits": gc_logits_tuple,
         }
+        if pred_aux is not None:
+            out["pred_aux"] = pred_aux
         if hyp_pred is not None:
             out["hyp_pred"] = hyp_pred
             out["hyp_score"] = hyp_score
@@ -1076,6 +1308,12 @@ class HybridPhysicsConstrainedLoss(nn.Module):
             + self.gc_ste_weight * loss_gc_ste
             + self.physics_weight * loss_physics
         )
+
+        if "pred_aux" in outputs:
+            # deep supervision of the trajectory the airspace field is re-read along
+            err_aux = (outputs["pred_aux"][..., :3] - y_target[..., :3]) / (scales[..., :3] * h_pos_norm)
+            total_loss = total_loss + 0.5 * self.cont_weight * F.smooth_l1_loss(
+                err_aux, torch.zeros_like(err_aux), beta=0.25)
 
         loss_hyp = None
         if "hyp_pred" in outputs:

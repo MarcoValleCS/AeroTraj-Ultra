@@ -1,4 +1,4 @@
-# AeroTraj-Ultra: physics-grounded, non-autoregressive 4-D flight-trajectory prediction with Gray-Code delta decoding, a differentiable trust region and a retrieval intent prior
+# AeroTraj-Ultra: physics-grounded, non-autoregressive 4-D flight-trajectory prediction with Gray-Code delta decoding, a differentiable trust region and a learned intent prior (retrieval, and a learned airspace field)
 
 **Technical report** · Marco Valle · AeroTraj-Ultra project
 Code: <https://github.com/MarcoValleCS/AeroTraj-Ultra>
@@ -43,6 +43,15 @@ a 1 s radar update cycle, while batched inference sustains **57,702 aircraft/s**
 mathematics, and predicting 13 horizons spanning 5–300 s costs only 1.17× predicting a
 single one.
 
+Finally, **AeroTraj-Atlas** adds to AeroTraj-Ultra an **airspace field**: a multi-resolution
+hash grid over position, heading and altitude, learned end to end from the trajectories and
+read by the horizon queries *along the trajectory the aircraft is about to fly* — a learned
+substitute for the HD map that road-agent predictors read. On the 365-day dataset (5 s grid,
+test split Nov–Dec 2022, the same 60,000 windows) it lowers the error from **865.1 m to
+723.3 m (−16.4 %)** at the full training budget (180 M windows, one seed), and by **−23.4 %**
+at the benchmark budget (10 M windows, mean of two seeds), with the largest gains in turns and
+at low altitude.
+
 ---
 
 ## 1. Introduction
@@ -86,6 +95,10 @@ The contributions are:
    plus a **measured negative result** on hypothesis selection (§9.2).
 6. **A measured inference-latency characterisation** (§8), because accuracy is
    meaningless in ATM if the prediction is not available before the update cycle closes.
+7. **A learned airspace field** (§4.12, §6.8): AeroTraj-Atlas, the most accurate model of
+   the project on the 365-day test split (723.3 m against 865.1 m for AeroTraj-Ultra at the
+   full budget). It replaces the neighbour search of the retrieval prior with O(1) table
+   reads, is trained end to end, and is read where the aircraft is *going*.
 
 Throughout, every number is traceable to a script in the repository and to the lab
 notebook [`EXPERIMENTS.md`](EXPERIMENTS.md); the formal module-by-module specification is
@@ -173,24 +186,30 @@ and the Euclidean distance is averaged over the horizon grid and the test window
 conversion is applied identically to every model, so the numbers are directly comparable
 across architectures and coordinate parameterisations.
 
-### 3.1 Why a 120-second observation window (the coarse-grid experiment)
+### 3.1 Why a 120-second observation window? (the coarse-grid experiment)
 
 The model described in this report reads **60 s** of history (12 points at 5 s). A second
 configuration, `config_365d_10s.json`, reads **120 s** (12 points at 10 s) and predicts
 **{10, 30, 60, 90, 180, 300} s** instead of 13 horizons. The two are trained on the same 365
-days with the same recipe, and every horizon of the coarse grid also exists in the fine grid,
-so the comparison is per horizon on identical test days.
+days with the same recipe, and every horizon of the coarse grid also exists in the fine grid.
+The 10 s grid is the protocol of the literature benchmark (§6.7); this section asks whether it
+is also a better *input*. **Short answer: no** — on identical test windows it costs +5.3 % at
+10–30 s and gains 2.0 % at 300 s, and doubling the history at the 5 s resolution gains 0.67 %,
+less than the seed-to-seed spread.
 
-**The argument for the longer window.** The error profile measured in §6.6 and the composition
-of the gains in §6.4 and §6.3 agree on one thing: above ~30 s the residual error is **not**
-sensor noise, it is *how much of the intent is legible in the input*. Three independent
-measurements carry the same signature, all monotone in the horizon:
+**The hypothesis for the longer window.** The error profile measured in §6.6 and the
+composition of the gains in §6.4 and §6.3 agree on one thing: above ~30 s the residual error
+is **not** sensor noise, it is *how much of the intent is legible in the input*. Independent
+levers carry that signature, monotone in the horizon; the two window experiments
+below, measured on identical windows, show the same shape at a much smaller size:
 
 | lever that adds information about intent | gain at the shortest horizon | gain at 300 s |
 |---|---:|---:|
 | retrieval prior over past trajectories (external) | −0.3 % (5 s) | −5.0 % |
+| learned airspace field read along the prior (AeroTraj-Atlas, §6.8, 2 seeds) | −0.13 % (5 s) | −27.08 % |
 | 4.5× more training data (implicit) | −4.9 % (5 s) | −15.3 % |
-| **more history in the window (this experiment)** | **+5.5 % (10 s)** | **−7.3 %** |
+| 120 s of history at 10 s vs 60 s at 5 s (identical windows) | +5.3 % (10 s) | −2.0 % |
+| 24 points at 5 s vs 12 points at 5 s (identical windows, 2 seeds) | −0.01 % (5 s) | −0.81 % |
 
 If the long-horizon error is governed by how much of the manoeuvre is visible, then a window
 covering **twice as much of the trajectory** attacks it directly. Concretely, what becomes
@@ -220,27 +239,65 @@ tests a *joint* change (longer history **and** coarser sampling), and the verdic
 horizon: if the extra history is what helps, the gain must **grow with the horizon**, the
 opposite of a sampling artefact.
 
-**Measured verdict** (150 epochs, 1.2M samples/epoch, same test days, 60,000 windows each):
+**Measured verdict** (150 epochs, 1.2M samples/epoch; Nov–Dec 2022 test split, 60,000
+windows, **the same windows for both models**: the anchors that have ≥ 120 s of history, the
+10 s model reading every second point of the same window;
+`results_window/same_windows_5s_vs_10s.json`):
 
-| horizon | 5 s grid (60 s of history) | 10 s grid (120 s of history) | Δ |
-|---:|---:|---:|---:|
-| 10 s | 57.2 m | 60.4 m | **+5.5 %** |
-| 30 s | 105.9 m | 108.4 m | **+2.3 %** |
-| 60 s | 275.6 m | 273.0 m | −0.9 % |
-| 90 s | 533.1 m | 517.1 m | **−3.0 %** |
-| 180 s | 1,631.5 m | 1,550.2 m | **−5.0 %** |
-| 300 s | 3,640.9 m | 3,374.2 m | **−7.3 %** |
+| horizon | 5 s grid (60 s of history) | 10 s grid (120 s of history) | Δ on identical windows | Δ previously reported |
+|---:|---:|---:|---:|---:|
+| 10 s | 56.8 m | 59.8 m | **+5.3 %** | +5.5 % |
+| 30 s | 102.7 m | 108.1 m | **+5.3 %** | +2.3 % |
+| 60 s | 264.5 m | 269.8 m | +2.0 % | −0.9 % |
+| 90 s | 508.1 m | 512.5 m | +0.9 % | −3.0 % |
+| 180 s | 1,529.4 m | 1,532.5 m | +0.2 % | −5.0 % |
+| 300 s | 3,418.2 m | 3,348.2 m | **−2.0 %** | −7.3 % |
+| mean of the six | 980.0 m | 971.8 m | −0.8 % | −5.8 % |
 
-The sign **changes at ~60 s** and does so monotonically: the coarse grid loses below 30 s,
-where kinematic detail is the quantity being measured, and wins above 90 s by a margin that
-grows to −7.3 %. Mean over the shared horizons: **−5.8 %**. The crossover coincides with the
-threshold the error-floor analysis found independently (§6.6) — the 5–30 s band is saturated
-by CPR quantisation, so nothing can be gained there, and above it the unknown is the
-manoeuvre. **The two configurations are therefore complementary rather than competing.**
+The coarse grid loses +5.3 % at 10–30 s, where kinematic detail is the quantity being
+measured, is within 2 % of the fine grid from 60 s to 180 s, and gains 2.0 % at 300 s only.
+The gain does grow with the horizon, as the hypothesis predicts, but it is small, and the mean
+of the six shared horizons moves by −0.8 %.
 
-**Disentangling the two effects** needs a 24-point window at 5 s (same resolution, double
-history) and, beyond that, a two-scale input: the fine 60 s window plus a coarse channel
-covering the 120 s before it. Both are natural follow-ups of a positive result.
+**A correction, stated.** An earlier version of this section reported **−7.3 % at 300 s and
+−5.8 % on the mean of the shared horizons**, with a crossover at 60 s, and concluded that the
+two configurations were complementary. That comparison evaluated each model on **its own**
+test windows, and the two window sets are not the same: the 10 s-grid test set only contains
+windows with ≥ 120 s of history, the 5 s-grid one every window with ≥ 60 s. The same 5 s model
+on its own windows scores 57.2 / 105.9 / 275.6 / 533.1 / 1,631.5 / 3,640.9 m (mean 1,040.7 m);
+restricted to the windows with ≥ 120 s of history it scores 980.0 m. The restriction alone is
+worth **−5.8 %** — the whole effect previously attributed to the window. The reason is
+specific: the 120 s requirement removes exactly **one window per track segment, the first
+one** (71,916 of 2,229,088 strided test windows, 3.23 %; 71,916 is the number of segments),
+and those windows are **2.61× harder** for the same model — 2,165.6 m against 828.1 m on the
+mean of the 13 horizons, 9,397.8 m against 3,462.1 m at 300 s
+(`results_window/short_history_windows.json`). The first minute of a track (take-off, entry
+into coverage, resumption after a gap) is where the aircraft manoeuvres. **Models with
+different window lengths have different valid anchors and must be compared on identical
+windows**; `eval_cross.py --split` does that by feeding every model the last `inp_seq_len`
+points of the windows of a split that declares the longest window.
+
+**Disentangling the two effects: 24 points at 5 s** (same resolution, double history). Same
+365 days, 5 s grid, 13 horizons, benchmark budget 25 epochs × 400,000 windows, two seeds per
+arm, all four models evaluated on the same 60,000 windows (the anchors of the 24-point
+window); `config_365d_12pt_bench.json`, `config_365d_24pt_bench.json`,
+`results_window/window_ab_2seeds.json`:
+
+| | 12 points (60 s) | 24 points (120 s) | Δ |
+|---|---:|---:|---:|
+| seed 97 | 1,038.0 m | 1,035.1 m | −0.28 % |
+| seed 11 | 1,053.0 m | 1,041.9 m | −1.05 % |
+| mean of the seeds | 1,045.5 m | 1,038.5 m | **−0.67 %** |
+
+Per horizon (mean of the two seeds): 5 s −0.01 %, 30 s −0.08 %, 60 s −0.23 %, 120 s −0.53 %,
+180 s −0.67 %, 300 s −0.81 %. The shape is the predicted one, the size is not useful: the
+seed-to-seed spread of the 12-point model alone is 1.44 % (1,038.0 vs 1,053.0 m), larger than
+the effect. The longer window costs 1.5× the training time per step (176 ms vs 115 ms eager)
+and 4.3 GB vs 2.6 GB of VRAM, with the same 1,276,983 parameters. **Not adopted: the default
+stays 12 points at 5 s.** The validation numbers of the two arms (1,134.7 m vs 1,062.4 m, an
+apparent −6.4 %) are not comparable, for the same reason as above: different window sets.
+A two-scale input (the fine 60 s window plus a coarse channel covering the 120 s before it)
+remains untested.
 
 ### 3.2 Grid bookkeeping: how the time step becomes a parameter
 
@@ -287,11 +344,13 @@ x (B×12×9)
   │                                        │
   │                          (optional) multi-hypothesis head: K=8, WTA loss
   │                          (optional) retrieval context on the horizon queries
+  │                          (optional) airspace field read along P (AeroTraj-Atlas, §4.12)
   ▼
 loss = 2.5·L_pos + 0.6·L_vel + 0.4·L_BCE + 0.25·L_STE + 0.25·L_kin   (+ 0.5·L_hyp)
 ```
 
-Every block is specified formally in [`ARCHITECTURE.md`](ARCHITECTURE.md) §2–§11.
+Every block is specified formally in [`ARCHITECTURE.md`](ARCHITECTURE.md) §2–§11, the
+airspace field of AeroTraj-Atlas in §15.
 
 ![AeroTraj-Ultra architecture overview: Gray-Code encoder and ACoAtt-V2 attention, pre-LN Transformer encoder, non-autoregressive multi-horizon decoder, physics kinematic prior, the three output heads and the MAF-Net trust-region fusion](figures/architecture_overview.png)
 
@@ -549,6 +608,48 @@ because the decoder is differentiable. `L_pos`, `L_vel` and `L_kin` (orange) are
 this project adds, and `L_kin` is what makes the three heads describe a single
 kinematically realisable curve. Reproduce with `plot_loss.py`.
 
+### 4.12 Airspace field (AeroTraj-Atlas)
+
+**Idea.** Above ~30 s the residual error is *intent*, the next manoeuvre, which 60 s of
+history do not contain. Road-agent predictors take that information from the HD map, read
+along the candidate trajectories (dynamic map collection, MTR: Shi et al., *NeurIPS* 2022).
+The route structure of the airspace — airways, waypoints, arrival and departure procedures —
+is not in the ADS-B data, so here the map is **learned from the trajectories**, as a
+multi-resolution hash grid (Instant-NGP: Mueller et al., *ACM Trans. Graph.* 2022), and read
+where the aircraft is going.
+
+**The field.** Over the dataset region (`λ ∈ [−15°, 35°]`, `φ ∈ [30°, 65°]`), `L = 6` levels
+with `r_l = 0.5 · 2^l` cells per degree (cells from 2° down to 0.0625°, ≈ 7 km), a periodic
+heading axis of 8 sectors (`ψ = atan2(v_x, v_y)`) and an altitude axis of 5 nodes at
+`h_k = 13 km · (k/4)²` (finer near the ground). Each level stores 8 features per node; the
+value at a point is the multilinear interpolation of the 16 surrounding nodes, the levels are
+concatenated (48 numbers) and multiplied by a fixed gain `g = 10`, which acts as a
+learning-rate multiplier for the table under Adam. Coarse levels are dense tables, fine
+levels are hashed into `2^18` entries.
+
+**Three reads.** With the gradient stopped on the positions:
+
+```
+f_0 = F(aircraft now)                         at the aircraft
+f_h = F(P_h)                                  along the physics prior, for each horizon h
+y¹_h = P_h + ContHead([LN(z¹_h) ‖ κ_h]) ⊙ s_h   trajectory proposed by decoder layer 1
+z¹_h ← z¹_h + MLP_r([F(y¹_h) ‖ state ‖ τ_h])    re-read along it, before decoder layer 2
+```
+
+The first two enter the horizon query as a **fourth block**,
+`q_h = Linear_{4D→D}[ c ‖ e_h ‖ φ(t_h) ‖ MLP([f_h ‖ f_0 ‖ state ‖ τ_h]) ]`, with
+`state = (normalised altitude, normalised vertical rate, ground speed / 900 km/h)`; the
+physics prior is therefore computed before the queries. The re-read (`refine`) adds one loss
+term, `0.5 · 2.5 · L_pos(y¹)`, which supervises the proposed trajectory.
+
+**Difference from the retrieval prior of §4.10.** No neighbour search and no candidate pool
+at inference (O(1) table reads instead of an O(B × M) top-k); trained end to end with the
+model; read along where the aircraft is *going*, not only where it is. The two have not been
+combined. Without the configuration key the model is AeroTraj-Ultra bit for bit. The final
+model has **10,495,863 parameters**: a 1,361,655-parameter network and a map of 9,134,208
+parameters (1,141,776 entries × 8 features).
+Full specification: [`ARCHITECTURE.md`](ARCHITECTURE.md) §15.
+
 ---
 
 ## 5. Experimental protocol
@@ -777,7 +878,8 @@ anchor position is **75.4 m**. The 5–30 s band is therefore **saturated by sen
 quantisation**: no architecture can do better without a better position source. All the
 remaining headroom lives at 60–300 s, where the error is not measurement noise but
 **intent** — which is exactly the regime the retrieval prior of §4.10 targets, and
-the reason its gain is monotone in the horizon.
+the reason its gain is monotone in the horizon. The airspace field of §4.12 targets the same
+regime and collects much more of it (§6.8).
 
 ### 6.7 The literature re-implemented on the 365-day, 10 s grid
 
@@ -921,6 +1023,151 @@ the ACoAtt ablation (the two variants differed in width as well as in the module
 reproducibility defect (a dataset on disk was ignored when OpenSky was unreachable).
 
 <!--RESULTS-10S-->
+
+### 6.8 AeroTraj-Atlas: the airspace field
+
+**Question.** Is the intent that the history does not contain recoverable from a map of the
+airspace learned from the trajectories themselves, read where the aircraft is going (§4.12)?
+And is the gain the map, or just the extra parameters?
+
+**Protocol.** The 365-day dataset on the 5 s grid, 12 input points, 13 horizons 5–300 s, the
+project's recipe, **25 epochs × 400,000 windows = 10 M windows per model**, `torch.compile`
+off. Test split 2022-11-26 → 12-31, **the same 60,000 windows for every model**
+(`eval_cross.py --split`), 3-D ECEF mean distance error. The map is fitted on the training
+days only (2022-01-01 → 10-20); validation is 2022-10-21 → 11-25. Configurations:
+`config_365d_12pt_bench.json` (AeroTraj-Ultra) and `config_365d_12pt_atlas_bench.json`
+(AeroTraj-Atlas); one configuration per ablation arm in `results_atlas/configs/`.
+
+**Two seeds** (`results_atlas/atlas_2seeds.json`), MDE [m]:
+
+| | AeroTraj-Ultra | + airspace field | AeroTraj-Atlas |
+|---|---:|---:|---:|
+| seed 97 | 1,091.5 | 903.1 | 846.5 |
+| seed 11 | 1,111.0 | 897.3 | 841.3 |
+| mean of the seeds | 1,101.2 | 900.2 | **843.9** |
+| vs AeroTraj-Ultra | — | −18.3 % | **−23.4 %** |
+
+"+ airspace field" is the field without the altitude axis and without the re-read;
+AeroTraj-Atlas is the final model (altitude axis + re-read). Per seed: Atlas −22.4 % (seed
+97) and −24.3 % (seed 11), the field −17.3 % and −19.2 %. The seed-to-seed spread is 1.8 %
+for AeroTraj-Ultra and 0.6 % for AeroTraj-Atlas.
+
+**Per horizon**, mean of the two seeds:
+
+| horizon | AeroTraj-Ultra | AeroTraj-Atlas | Δ |
+|---:|---:|---:|---:|
+| 5 s | 59.8 | 59.7 | −0.13 % |
+| 10 s | 64.9 | 64.5 | −0.69 % |
+| 15 s | 73.4 | 72.3 | −1.49 % |
+| 20 s | 86.5 | 84.2 | −2.67 % |
+| 30 s | 125.6 | 118.2 | −5.89 % |
+| 45 s | 213.9 | 191.7 | −10.37 % |
+| 60 s | 335.6 | 290.4 | −13.49 % |
+| 90 s | 657.9 | 543.0 | −17.46 % |
+| 120 s | 1,066.1 | 851.9 | −20.09 % |
+| 150 s | 1,543.4 | 1,205.2 | −21.91 % |
+| 180 s | 2,079.1 | 1,593.7 | −23.35 % |
+| 240 s | 3,299.6 | 2,461.1 | −25.41 % |
+| 300 s | 4,710.3 | 3,434.8 | −27.08 % |
+| mean | 1,101.2 | 843.9 | −23.37 % |
+
+The gain is monotone in the horizon, the signature of an intent prior: nothing at 5 s, where
+the error is sensor quantisation (§6.6), −27 % at 300 s.
+
+**Ablation**, seed 97 (`results_atlas/ablation_s97.json`):
+
+| model | MDE [m] | vs Ultra | parameters | s / epoch |
+|---|---:|---:|---:|---:|
+| AeroTraj-Ultra | 1,091.5 | — | 1,276,983 | 23.5 |
+| Ultra widened to n_embd 288 (capacity control) | 1,032.2 | −5.44 % | 4,968,807 | 41.8 |
+| Ultra + aircraft frame | 1,108.8 | +1.59 % | 1,301,323 | 23.0 |
+| field, 4 levels (cells down to 0.25°) | 949.6 | −13.00 % | 3,750,423 | 27.2 |
+| field read at the aircraft only (`ahead: false`) | 938.4 | −14.02 % | 7,949,335 | 25.5 |
+| **field** (6 levels, read along the prior) | 903.1 | −17.26 % | 7,949,335 | 26.3 |
+| field + aircraft frame | 902.4 | −17.33 % | 7,973,675 | 26.7 |
+| field, 7 levels (cells down to 0.031°, `2^19` table) | 886.1 | −18.82 % | 16,340,247 | 29.1 |
+| field + refine | 877.6 | −19.60 % | 7,977,847 | 29.3 |
+| wide + field | 873.2 | −20.00 % | 11,780,263 | 47.0 |
+| field + altitude axis | 865.2 | −20.73 % | 10,467,351 | 33.3 |
+| field + altitude + vertical-rate axes | 868.1 | −20.46 % | 11,958,551 | 39.4 |
+| **AeroTraj-Atlas** (field + altitude axis + refine) | **846.5** | **−22.45 %** | 10,495,863 | 35.7 |
+
+1. **It is not the parameters.** 3.9× the network parameters (the wide backbone) buy −5.4 %
+   at 1.8× the training time; the map buys −17.3 % with 56,160 more network parameters and
+   1.12× the time.
+2. **Reading the map ahead matters.** Read at the aircraft only it gives 938.4 m, read along
+   the prior 903.1 m (−3.8 %, and −4.5 % at 300 s: 3,930.7 → 3,753.1 m).
+3. **Resolution has diminishing returns.** 4 → 6 levels −4.9 %, 6 → 7 levels −1.9 % for a map
+   2.3× larger. Six levels are kept.
+4. **The altitude axis and the re-read are nearly additive.** The altitude axis is worth
+   −4.2 % on top of the field (903.1 → 865.2 m), the re-read −2.8 % (903.1 → 877.6 m);
+   together −6.3 % (846.5 m). Both exceed the seed spread.
+5. **Not adopted.** The aircraft frame (alone +1.6 %, worse at the long horizons: +2.2 % at
+   300 s; with the field 902.4 vs 903.1 m, no gain); the vertical-rate axis (868.1 vs
+   865.2 m, +0.3 %, with more parameters and 18 % more time); the wide backbone with the
+   field (−3.3 % at 1.8× the training time: left as an option, not the default).
+
+**Where the gain is** (`results_atlas/where_gain_s97.json`, Atlas vs Ultra, seed 97;
+`eval_where_gain.py`):
+
+| windows | share | Ultra | Atlas | Δ | Ultra 300 s | Atlas 300 s | Δ |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| all | 100.0 % | 1,091.5 | 846.5 | −22.4 % | 4,675.0 | 3,447.6 | −26.3 % |
+| altitude < 3 km | 12.7 % | 2,825.2 | 1,979.7 | −29.9 % | 11,147.1 | 7,561.9 | −32.2 % |
+| altitude 3–7.5 km | 19.9 % | 1,571.4 | 1,188.4 | −24.4 % | 6,941.9 | 4,888.0 | −29.6 % |
+| altitude ≥ 7.5 km | 67.4 % | 623.5 | 532.3 | −14.6 % | 2,787.4 | 2,247.8 | −19.4 % |
+| turns > 15° within 300 s | 20.1 % | 3,153.9 | 2,177.2 | −31.0 % | 13,810.5 | 8,967.0 | −35.1 % |
+| turns ≤ 15° | 79.9 % | 572.9 | 511.9 | −10.6 % | 2,377.6 | 2,059.5 | −13.4 % |
+| altitude change > 300 m | 50.4 % | 1,635.0 | 1,221.4 | −25.3 % | 7,002.0 | 4,968.4 | −29.0 % |
+| level (≤ 300 m) | 49.6 % | 540.3 | 466.2 | −13.7 % | 2,314.8 | 1,905.0 | −17.7 % |
+| straight and level | 47.1 % | 411.2 | 375.9 | −8.6 % | 1,670.7 | 1,483.7 | −11.2 % |
+
+The paired difference of the window means is −245.0 m, 95 % bootstrap interval
+[−253.6, −236.5]; 57.6 % of the windows improve. The gain is largest exactly where the error
+is intent — turns and low altitude (terminal areas) — and smallest in straight and level
+cruise.
+
+**Full budget (the headline result).** `config_365d_atlas_1200k.json` is
+`config_365d_1200k.json` plus the field: 150 epochs × 1.2 M windows (180 M),
+`torch.compile(reduce-overhead)`, one seed (97) for both models
+(`results_365_atlas/full_budget_vs_ultra.json`). On the same 60,000 Nov–Dec test windows
+**AeroTraj-Ultra 865.1 m → AeroTraj-Atlas 723.3 m, −16.4 %**. Validation: 889.4 m (best
+epoch 137) → 740.0 m (best epoch 143), −16.8 %. No early stop; the validation error was
+still falling slowly at the end (751.5 m at epoch 100, 740.0 m at 143, 739.9 m at 150).
+
+| horizon | AeroTraj-Ultra | AeroTraj-Atlas | Δ |
+|---:|---:|---:|---:|
+| 5 s | 54.4 | 51.3 | −5.71 % |
+| 10 s | 57.2 | 53.4 | −6.75 % |
+| 15 s | 63.6 | 59.1 | −6.96 % |
+| 20 s | 74.5 | 68.6 | −7.84 % |
+| 30 s | 105.9 | 95.3 | −9.96 % |
+| 45 s | 177.9 | 155.5 | −12.58 % |
+| 60 s | 275.6 | 237.3 | −13.89 % |
+| 90 s | 533.1 | 452.9 | −15.04 % |
+| 120 s | 852.5 | 719.0 | −15.66 % |
+| 150 s | 1,221.9 | 1,026.3 | −16.01 % |
+| 180 s | 1,631.5 | 1,365.2 | −16.33 % |
+| 240 s | 2,557.9 | 2,116.8 | −17.24 % |
+| 300 s | 3,640.9 | 3,001.9 | −17.55 % |
+| mean | 865.1 | 723.3 | −16.40 % |
+
+* AeroTraj-Atlas is better at **every** horizon, including the 5–30 s band that the
+  benchmark-budget runs left untouched.
+* The relative gain is smaller than at the benchmark budget (−16.4 % vs −23.4 %): with 18×
+  more training the base model learns part of the geography implicitly. Read the other way,
+  **AeroTraj-Atlas with 10 M windows (846.5 m, seed 97) is already below AeroTraj-Ultra with
+  180 M (865.1 m)**.
+* By group (`results_365_atlas/where_gain.json`) the gain is uniform: turns > 15° −19.3 %
+  (2,253.3 → 1,818.5 m), turns ≤ 15° −13.2 %, altitude < 3 km −17.0 %, ≥ 7.5 km −16.0 %,
+  straight and level −14.4 % (373.4 → 319.8 m). Paired difference −141.8 m, 95 % interval
+  [−148.6, −134.7]; 62.5 % of the windows improve.
+* Training cost: 53.2 s/epoch against 47.1 s/epoch compiled (1.13×), 2.39 h against 1.98 h.
+
+**What was not evaluated.** The March 2022 split (790.2 m for AeroTraj-Ultra), because the
+90-day dataset it comes from was removed from disk; a second seed at the full budget; the
+combination with the retrieval prior and with the multi-hypothesis head; the conformal
+calibration of §7 for AeroTraj-Atlas.
 
 ---
 
@@ -1190,6 +1437,27 @@ load (the per-call CUDA-event median included scheduling gaps when the same mach
 concurrently building the 365-day dataset); the *relative* comparisons reported here were
 all taken within a single run, where the load is common to both arms.
 
+### 8.7 The cost of the airspace field
+
+AeroTraj-Atlas (§4.12) against AeroTraj-Ultra on an RTX 4070 with the GPU idle, through
+`FastPredictor`, input **already on the GPU** (`bench_latency_field.py`,
+`results_atlas/latency.json`):
+
+| | AeroTraj-Ultra | AeroTraj-Atlas |
+|---|---:|---:|
+| 1 aircraft, eager | 17.4 ms | 42.2 ms (2.4×) |
+| 1 aircraft, `torch.compile(reduce-overhead)` | 0.65 ms | 0.66 ms |
+| batch 4,096, eager | 54.4 ms (75,348 aircraft/s) | 78.5 ms (52,172 aircraft/s) |
+| batch 4,096, compiled | 41.1 ms (99,780 aircraft/s) | 44.8 ms (91,355 aircraft/s) |
+
+**Warning.** This harness does **not** include the host-to-device copy, so these numbers are
+comparable between the two models but **not** with the 19.3–20.7 ms (eager) and 2.8–6.5 ms
+(compiled) of §8.1 and §8.6, which did include it. Eager, the field costs 2.4× at one
+aircraft; compiled, the two models are within 0.01 ms. `torch.compile` does not
+change the metric of AeroTraj-Atlas: 844.767 m eager, 844.766 m compiled on 57,344 test
+windows, the per-horizon profile within 0.002 m and no window moving by more than 100 m
+(`results_atlas/compile_quality.json`).
+
 ---
 
 ## 9. Discussion
@@ -1212,6 +1480,11 @@ all taken within a single run, where the load is common to both arms.
 4. **Uncertainty should be certified, not estimated.** The conformal band is narrower than
    the inflated single prediction *and* has verified coverage. The learned score head does
    not (§9.2).
+5. **A learned map of the airspace is the strongest intent prior measured here.** The
+   airspace field of AeroTraj-Atlas lowers the error by −23.4 % at the benchmark budget (two
+   seeds, spread 0.6–1.8 %) and by −16.4 % at the full budget (865.1 → 723.3 m), against
+   −5.4 % for 3.9× the network parameters; reading it ahead along the prior beats reading it
+   at the aircraft, and the gain concentrates in turns and at low altitude (§6.8).
 
 ### 9.2 Negative results, stated
 
@@ -1267,6 +1540,31 @@ We report these because they constrain the design space:
   IMM with a learnable noise model, a learnable mode-transition matrix and a learnable
   turn rate is **9.0 % worse** than the plain constant-velocity Kalman filter (§6.7.1). The
   extra hypotheses cost more in estimation noise than they gain in coverage.
+* **A longer observation window does not pay off, and our first measurement said it did.**
+  The −7.3 % at 300 s first reported for 120 s of history came from evaluating the two
+  models on different window sets; on identical windows it is −2.0 % at 300 s and +5.3 % at
+  10–30 s, and 24 points at 5 s gain 0.67 %, less than the 1.44 % seed-to-seed spread
+  (§3.1). The first window of every track segment is 2.61× harder than the rest, so any
+  change that drops it looks like an improvement.
+* **The aircraft frame does not help.** Giving the history also in along-/cross-track
+  coordinates, with a second residual head in that frame, is +1.6 % *worse* than AeroTraj-Ultra
+  (+2.2 % at 300 s), and with the airspace field it changes nothing (902.4 vs 903.1 m, §6.8).
+  It stays in the code as a documented ablation.
+* **A vertical-rate axis of the field does not help.** Meant to separate departures from
+  arrivals, it gives 868.1 vs 865.2 m (+0.3 %) with more parameters and 18 % more time.
+* **The wide backbone is not adopted as the default.** With the field, `n_embd` 288 gains a
+  further −3.3 % at 1.8× the training time; it is left as an option.
+* **The normalisation statistics were wrong, and it did not matter.** `data_pipeline.py`
+  computed the mean of a float32 array along axis 0, whose float32 running sum stops growing:
+  on the 242 M training points of the 365-day set the stored latitude mean is 4.58° for a true
+  48.85°, the altitude mean 141.7 for 836.3 (10 m units), the temperature 35.4 K for 235.7 K,
+  the standard deviation of `v_x` 271.6 for 542.6 km/h — every dataset with its own wrong
+  constants. With exact (float64) statistics (`results_atlas/norm_stats_ab.json`, benchmark
+  budget, seed 97) AeroTraj-Ultra goes 1,091.5 → 1,095.6 m (+0.38 %) and AeroTraj-Atlas
+  846.5 → 843.8 m (−0.32 %): no effect, both inside the seed spread (the network absorbs an
+  affine rescaling, and the positions also enter through the Gray code and the relative
+  features). The exact statistics are available (`data.norm_stats`) but the stored ones remain
+  the default, so every published run stays reproducible.
 
 ### 9.3 Limitations
 
@@ -1277,7 +1575,9 @@ We report these because they constrain the design space:
   margin is structurally limited — this is a physical floor, not a model deficit.
 * **At 300 s the absolute error remains large** (4.2 km, ≈ 2.6 % of the distance flown).
   Predicting 5 minutes of flight requires route knowledge and ATC clearances, not only the
-  kinetic state: it needs flight-plan and short-term-weather integration.
+  kinetic state: it needs flight-plan and short-term-weather integration. A learned map of
+  the routes recovers part of it (AeroTraj-Atlas: 3,640.9 → 3,001.9 m at 300 s on the
+  365-day full budget, §6.8); clearances remain out of reach.
 * **The MAF gate contributes little** (−1.7 m). Its `trust_sigma` is a fixed schedule,
   almost deactivated at short horizons; it should be a learned function of the horizon.
 * **Midnight-crossing flights are split at the split boundary**: the split is chronological
@@ -1288,6 +1588,19 @@ We report these because they constrain the design space:
   (`data_pipeline._process_raw_dataframe_to_5s_segments`).
 * **The legacy comparison carries a declared handicap** (§6.5): the OpenSky data has no
   aircraft type, operator or airport labels, so FlightPREV lost its categorical priors.
+* **The airspace field is specific to its region and period.** The map is learned on the
+  European bounding box, and route structure changes (AIRAC cycles, seasonal flows). The
+  test split starts 37 days after the last training day and ends 72 days after it; nothing is
+  known beyond that gap. Operational use needs the map re-fitted periodically; this is
+  untested.
+* **AeroTraj-Atlas is mostly map.** 9.1 M of its 10.5 M parameters are the table (about
+  37 MB in float32).
+* **The full-budget AeroTraj-Atlas result is one seed per model on one test split.**
+* **The field costs 2.4× in eager single-aircraft latency**; compiled, the cost is unchanged
+  (§8.7).
+* **The field has not been combined** with the multi-hypothesis head (with `refine` the
+  combination is not implemented) nor with the retrieval prior, and the conformal
+  calibration of §7 has not been redone for AeroTraj-Atlas.
 
 ---
 
@@ -1310,6 +1623,14 @@ and closing that gap needs a per-hypothesis coherence model, not a hand-crafted 
 natural next steps are a 365-day dataset (roughly doubling the retrieval neighbourhood
 density) and a descriptor carrying time-of-day, the strongest single proxy for schedule
 intent.
+
+A further large gain came afterwards, from a learned airspace field read along the trajectory
+the aircraft is about to fly: **AeroTraj-Atlas** lowers the error on the 365-day test split
+from 865.1 m to **723.3 m (−16.4 %)** at the full budget (one seed, one test split) and by
+−23.4 % at the benchmark budget (two seeds) — there mostly in turns and at low altitude, at the
+full budget uniformly across flight conditions — at the same compiled single-aircraft latency. It is now the reference model of the project; the earlier results remain valid
+measurements of their own models, and the open questions move to the map's validity over time
+and to its combination with the multi-hypothesis head.
 
 ---
 
@@ -1361,3 +1682,12 @@ intent.
 
 15. Valle, M. *FlightPREV* — <https://github.com/MarcoValleCS/flight>. Re-implemented and
     compared in §6.5.
+
+**Airspace field (AeroTraj-Atlas)**
+
+16. Shi, Jiang, Dai & Schiele. *Motion Transformer with Global Intention Localization and
+    Local Movement Refinement.* NeurIPS 2022. — dynamic map collection along the predicted
+    trajectory.
+17. Mueller, Evans, Schied & Keller. *Instant Neural Graphics Primitives with a
+    Multiresolution Hash Encoding.* ACM Transactions on Graphics 41(4), 2022. —
+    multi-resolution hash grid.

@@ -67,8 +67,12 @@ class FlightSlidingWindowDataset(Dataset):
         with open(stats_path, "r", encoding="utf-8") as f:
             self.stats = json.load(f)
 
-        self.norm_mean = np.array(self.stats["train_norm_stats"]["mean"], dtype=np.float32)
-        self.norm_std = np.array(self.stats["train_norm_stats"]["std"], dtype=np.float32)
+        # `data.norm_stats` selects the statistics: the stored ones (default, the
+        # constants of every published run) or "train_norm_stats_exact", which
+        # `data_pipeline.py --exact-norm-stats` adds (see exact_norm_stats)
+        norm = self.stats[self.cfg["data"].get("norm_stats", "train_norm_stats")]
+        self.norm_mean = np.array(norm["mean"], dtype=np.float32)
+        self.norm_std = np.array(norm["std"], dtype=np.float32)
 
         if stride is None:
             stride = (

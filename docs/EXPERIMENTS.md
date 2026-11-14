@@ -31,6 +31,7 @@ Pang, Alam, Lulli et al., AAMAS 2026).
 5. [Risultati sperimentali](#5-risultati-sperimentali)
 6. [Benchmark dei modelli della letteratura](#6-benchmark-dei-modelli-della-letteratura-90-giorni-orizzonte-5-s--300-s)
    - 6.10 **Latenza e throughput di inferenza** (quanto ci mette una previsione)
+   - 6.15 **AeroTraj-Atlas: campo dello spazio aereo** (il modello migliore: 723,3 m contro 865,1 m)
 7. [Funzionalità e limiti noti](#7-funzionalità-e-limiti-noti)
 8. [Riferimenti](#8-riferimenti)
 
@@ -116,7 +117,7 @@ C:\Users\marco\Desktop\FlightPREV2\
 ├── requirements.txt                   # environment verificato (numpy/matplotlib pitfall documentato)
 ├── data_pipeline.py                   # acquisizione + preprocess dati reali via pyopensky (parallelo + cache)
 ├── dataloader.py                      # sliding window vettorizzato (basso consumo RAM)
-├── model.py                           # AeroTraj-Ultra + baseline + loss  (ARCHITETTURA)
+├── model.py                           # AeroTraj-Ultra + baseline + loss  (ARCHITETTURA); AirspaceField (Atlas)
 ├── run.py                             # training loop, benchmark multi-modello, grafici
 ├── predict.py                         # inferenza standalone su un campione
 ├── eval_ckpt.py                       # valuta QUALSIASI checkpoint su uno split arbitrario
@@ -149,6 +150,21 @@ C:\Users\marco\Desktop\FlightPREV2\
 ├── checkpoints_365_1200k/             # 365 giorni, 1,2M campioni/epoca
 ├── checkpoints_365_10s/               # 365 giorni, griglia a 10 s (storia 120 s)
 ├── checkpoints_bench_10s/             # benchmark della griglia a 10 s (modelli della letteratura)
+├── checkpoints_365_atlas/             # AeroTraj-Atlas a budget pieno (locale, gitignored)
+├── checkpoints_atlas/                 # AeroTraj-Atlas: bracci dell'ablation e seed (locale, gitignored)
+├── checkpoints_window/                # studio della finestra, §6.14 (locale, gitignored)
+├── config_365d_12pt_bench.json        # AeroTraj-Ultra, budget del benchmark, griglia a 5 s
+├── config_365d_12pt_atlas_bench.json  # AeroTraj-Atlas, budget del benchmark (§6.15)
+├── config_365d_atlas_1200k.json       # AeroTraj-Atlas, budget pieno (§6.15)
+├── config_365d_24pt_bench.json        # finestra a 24 punti (§6.14)
+├── eval_window_study.py               # studio della finestra su finestre identiche (§6.14)
+├── eval_where_gain.py                 # due checkpoint per quota / virata / livello, bootstrap appaiato
+├── bench_latency_field.py             # latenza e throughput di una variante su FastPredictor
+├── results_atlas/                     # Atlas a budget del benchmark: ablation, 2 seed, where-gain,
+│                                      #   latenza, compile_quality, norm_stats_ab, configs/ per braccio
+├── results_365_atlas/                 # Atlas a budget pieno (evaluation_summary, horizon_benchmark.csv,
+│                                      #   full_budget_vs_ultra, where_gain)
+├── results_window/                    # studio della finestra (§6.14), configs/ delle repliche
 ├── results_bench/                     # benchmark a 90 giorni (tabella unificata a 12 modelli)
 ├── results_hyp/                       # calibrazione conformal
 ├── results_hyp_reg/                   # esperimenti sul retrieval
@@ -266,10 +282,12 @@ quantizzato dell'ancora), (ii) l'ensembling tra architetture diverse peggiora la
 3. **Loss normalizzato per orizzonte**: `h_pos_norm = 0,04 + 0,96·(Δt/60 s)` schiaccia i
    contributi brevi; una normalizzazione *relativa* (errore / distanza percorsa) bilancierebbe
    meglio 5 s e 10 min.
-4. **Finestra di input 12 → 20–24 punti** — da ri-valutare: l'ipotesi iniziale (denoising
-   dell'ancora) è **smentita dai dati** (rumore dell'ancora 75,4 m 1σ, errore del modello a 5 s
-   61,2 m ⇒ il denoising è già implicito). Il beneficio residuo, se c'è, è nella stima del
-   rateo di virata e quindi solo sugli orizzonti lunghi.
+4. ~~**Finestra di input 12 → 20–24 punti**~~ — **fatto** (§6.14): l'ipotesi iniziale
+   (denoising dell'ancora) è **smentita dai dati** (rumore dell'ancora 75,4 m 1σ, errore del
+   modello a 5 s 61,2 m ⇒ il denoising è già implicito). Il beneficio residuo è davvero solo
+   sugli orizzonti lunghi, ma è piccolo: 24 punti a 5 s danno **−0,67 %** (media di due
+   seed, −0,81 % a 300 s), meno della dispersione fra seed (1,44 %), a 1,5× il tempo per
+   step. **Non adottato**: il default resta 12 punti a 5 s.
 5. **`track` (rotta) e `vertical_rate` grezzi** come feature separate: attualmente vx/vy/vz sono
    ricostruiti da groundspeed+track, e la rotta è l'unica informazione diretta sulla direzione
    di marcia.
@@ -1494,6 +1512,379 @@ modo e spiega perché l'IMM non batte il Kalman.
 | FlightBERT++ (fedele) | 1,85 M | 23 | 1 363,2 | 10,3 min |
 | BiLSTM | 1,36 M | 25 | 1 828,8 | 10,3 min |
 
+---
+
+### 6.14 Finestra di osservazione: 24 punti a 5 s, e la correzione dello studio 60 s / 120 s
+
+**Domanda.** Lo studio della finestra (griglia a 5 s, 12 punti = 60 s di storia, contro
+griglia a 10 s, 12 punti = 120 s) era stato riportato come **−7,3 % a 300 s** e **−5,8 %**
+sulla media degli orizzonti comuni a favore della finestra lunga, con incrocio a 60 s. Quel
+confronto valutava ciascun modello sulle **proprie** finestre di test, e i due insiemi non
+sono uguali: il test set a 10 s contiene solo finestre con ≥ 120 s di storia, quello a 5 s
+tutte le finestre con ≥ 60 s. Due domande: (a) quanto resta dell'effetto a parità di
+finestre? (b) a parità di risoluzione (5 s), raddoppiare la storia (24 punti) aiuta?
+
+**Protocollo.**
+
+1. *Stesse finestre.* I due modelli a budget pieno (150 epoche × 1,2M) sullo split nov-dic
+   2022, 60 000 finestre, **identiche per entrambi**: le ancore con ≥ 120 s di storia; il
+   modello a 10 s legge un punto su due della stessa finestra
+   (`results_window/same_windows_5s_vs_10s.json`).
+2. *Finestre scartate.* Errore dello stesso modello a 5 s sulle finestre che il requisito
+   dei 120 s elimina (`results_window/short_history_windows.json`).
+3. *24 punti a 5 s.* Stessi 365 giorni, griglia a 5 s, 13 orizzonti, budget del benchmark
+   25 epoche × 400 000 finestre, **due seed per braccio** (97 e 11), tutti e quattro i
+   modelli valutati sulle stesse 60 000 finestre (le ancore della finestra a 24 punti);
+   `config_365d_12pt_bench.json`, `config_365d_24pt_bench.json`,
+   `results_window/window_ab_2seeds.json`. Il seed è letto dalla chiave `seed` della
+   configurazione.
+
+Strumenti: `eval_cross.py --split LABEL=config.json=split` (ripetibile, sostituisce i due
+split di test predefiniti) passa a ogni modello gli ultimi `inp_seq_len` punti delle finestre
+dello split, quindi modelli con finestre diverse sono confrontati sulle stesse ancore (lo
+split deve dichiarare la finestra più lunga); `eval_ckpt.py` taglia la finestra allo stesso
+modo e ora carica anche i checkpoint precedenti alla parametrizzazione di `dt`.
+
+**Risultati**
+
+(1) I due modelli a budget pieno sulle stesse finestre (errore 3-D ECEF in metri):
+
+| orizzonte | griglia 5 s (60 s di storia) | griglia 10 s (120 s di storia) | Δ a finestre identiche | Δ riportato prima |
+|---:|---:|---:|---:|---:|
+| 10 s | 56,8 | 59,8 | +5,3 % | +5,5 % |
+| 30 s | 102,7 | 108,1 | +5,3 % | +2,3 % |
+| 60 s | 264,5 | 269,8 | +2,0 % | −0,9 % |
+| 90 s | 508,1 | 512,5 | +0,9 % | −3,0 % |
+| 180 s | 1 529,4 | 1 532,5 | +0,2 % | −5,0 % |
+| 300 s | 3 418,2 | 3 348,2 | **−2,0 %** | −7,3 % |
+| media dei sei | 980,0 | 971,8 | **−0,8 %** | −5,8 % |
+
+Lo stesso modello a 5 s sulle **sue** finestre (≥ 60 s di storia) fa 57,2 / 105,9 / 275,6 /
+533,1 / 1 631,5 / 3 640,9 m, media 1 040,7 m: restringerlo alle finestre con ≥ 120 s di
+storia vale **−5,8 % da solo** (1 040,7 → 980,0 m).
+
+(2) 24 punti contro 12 punti a 5 s (MDE sui 13 orizzonti, stesse finestre):
+
+| | 12 punti (60 s) | 24 punti (120 s) | Δ |
+|---|---:|---:|---:|
+| seed 97 | 1 038,0 | 1 035,1 | −0,28 % |
+| seed 11 | 1 053,0 | 1 041,9 | −1,05 % |
+| media dei seed | 1 045,5 | 1 038,5 | **−0,67 %** |
+
+Per orizzonte (media dei due seed): 5 s −0,01 %, 30 s −0,08 %, 60 s −0,23 %, 120 s −0,53 %,
+180 s −0,67 %, 300 s −0,81 %.
+
+**Letture**
+
+1. **Il −7,3 % / −5,8 % era un artefatto del test set, non della finestra.** A parità di
+   finestre la griglia a 10 s perde **+5,3 % a 10–30 s** e guadagna solo **2,0 % a 300 s**;
+   la media dei sei orizzonti comuni si muove di −0,8 %. Il −5,8 % riportato prima è
+   esattamente quello che vale la sola restrizione delle finestre (1 040,7 → 980,0 m). La
+   griglia a 10 s resta il protocollo del benchmark della letteratura (§6.13), non un input
+   migliore.
+2. **Perché gli insiemi differiscono tanto.** Il requisito dei 120 s toglie esattamente
+   **una finestra per segmento di traccia, la prima** (71 916 su 2 229 088 finestre di test
+   con stride, 3,23 %; 71 916 è il numero di segmenti). Quelle finestre sono **2,61× più
+   difficili** per lo stesso modello: 2 165,6 m contro 828,1 m sulla media dei 13 orizzonti,
+   9 397,8 m contro 3 462,1 m a 300 s. Il primo minuto di una traccia (decollo, ingresso in
+   copertura, ripresa dopo un buco) è dove l'aereo manovra.
+3. **Raddoppiare la storia a parità di risoluzione ha la forma attesa ma non la taglia.** Il
+   guadagno cresce con l'orizzonte (−0,01 % a 5 s → −0,81 % a 300 s), ma in media è
+   −0,67 %, mentre la dispersione fra seed del solo modello a 12 punti è **1,44 %**
+   (1 038,0 contro 1 053,0 m): l'effetto è dentro il rumore. **Non adottato**: il default
+   resta 12 punti a 5 s.
+4. **Anche la validazione non è confrontabile fra i due bracci** (1 134,7 m contro
+   1 062,4 m, un apparente −6,4 %), per lo stesso motivo del punto 1: insiemi di finestre
+   diversi. Regola: modelli con finestre di lunghezza diversa hanno ancore valide diverse e
+   vanno confrontati su finestre identiche.
+5. Resta non testato l'input a due scale (la finestra fine di 60 s più un canale grossolano
+   che copre i 120 s precedenti).
+
+**Costo**: la finestra a 24 punti costa **1,5×** il tempo per step (176 ms contro 115 ms in
+eager) e 4,3 GB contro 2,6 GB di VRAM, con gli stessi 1 276 983 parametri.
+
+---
+
+### 6.15 AeroTraj-Atlas: campo dello spazio aereo (mappa appresa)
+
+**Domanda.** Sopra i ~30 s l'errore residuo è *intenzione* (la prossima manovra), che 60 s
+di storia non contengono. L'informazione che manca si può ricavare da una mappa dello
+spazio aereo appresa dalle traiettorie stesse e letta dove l'aereo **sta andando**? E il
+guadagno è della mappa o solo dei parametri in più?
+
+**Idea.** Per gli agenti stradali quell'informazione viene dalla mappa HD, letta lungo le
+traiettorie candidate (dynamic map collection, MTR: Shi, Jiang, Dai & Schiele, NeurIPS 2022).
+La struttura delle rotte (aerovie, waypoint, procedure di arrivo e partenza) non è nei dati
+ADS-B, quindi la mappa è **appresa** dalle traiettorie, come griglia hash multi-risoluzione
+(Instant-NGP: Mueller, Evans, Schied & Keller, ACM Trans. Graph. 41(4), 2022). Non è una
+nuova classe: è `AeroTrajUltra` (`model.py`) con la chiave `model.airspace_field`
+(argomenti di `AirspaceField` più gli interruttori `ahead` e `refine`); l'impostazione finale
+è `{"n_alt": 5, "refine": true}`. Senza la chiave il modello è AeroTraj-Ultra bit per bit
+(stesso state dict, stesse uscite in eval e in train; ogni checkpoint esistente si carica).
+
+* Regione `lon ∈ [−15, 35]`, `lat ∈ [30, 65]` (`data.region_bounds`); fuori regione si legge
+  sul bordo.
+* 6 livelli a `0,5 · 2^l` celle per grado (celle da 2° a 0,0625°, circa 7 km nord-sud); asse
+  della rotta **periodico** a 8 settori (`ψ = atan2(v_x, v_y)`); asse della quota a 5 nodi in
+  `h_k = 13 km · (k/4)²` (0; 0,81; 3,25; 7,31; 13 km: più fitto vicino al suolo).
+* 8 feature per nodo, interpolazione multilineare dei 16 nodi vicini, livelli concatenati (48
+  numeri) e moltiplicati per un guadagno fisso `g = 10`: con Adam ogni peso si muove di circa
+  `lr` per passo qualunque sia la scala del gradiente, quindi il guadagno è un moltiplicatore
+  del learning rate della sola tabella (le celle fini, visitate di rado, ne hanno bisogno) e
+  l'ottimizzatore resta intatto. Inizializzazione `U(−1e-4, 1e-4)`.
+* Livelli 0–1 densi (19 760 e 73 440 voci), livelli 2–5 in hash (262 144 voci ciascuno):
+  1 141 776 voci × 8 = **9 134 208 parametri**.
+* Tre letture per forward, con il gradiente fermato sulle posizioni: (1) all'aereo; (2) lungo
+  il prior cinematico, a ciascuno dei 13 orizzonti (`ahead`); (3) *dynamic collection*
+  (`refine`): il primo strato del decoder propone una traiettoria con la **stessa** testa
+  residua, la mappa è riletta lungo di essa e sommata ai token degli orizzonti prima del
+  secondo strato (MLP con l'ultimo strato inizializzato a zero).
+* Le letture (1) e (2) entrano nella query dell'orizzonte come **quarto blocco**
+  (`MLP([f_h, f_0, stato, t])`, stato = quota e velocità verticale normalizzate, velocità al
+  suolo / 900 km/h); il prior fisico è quindi calcolato *prima* delle query (stessi valori).
+  Con `refine` la loss ha un termine ausiliario `0,5 · w_pos · SmoothL1` sulle posizioni della
+  traiettoria proposta, con la stessa normalizzazione per orizzonte.
+* Parametri del modello finale: **10 495 863** = rete 1 361 655 (AeroTraj-Ultra 1 276 983 +
+  MLP del campo 35 424 + quarto blocco di `horizon_proj` 20 736 + MLP di `refine` 28 512) +
+  mappa 9 134 208.
+* Differenza dal retrieval (§6.7): nessuna ricerca dei vicini né pool di candidati in
+  inferenza (letture O(1) della tabella invece di un top-k O(B × M)), addestrato end to end
+  con il modello, letto dove l'aereo **va** e non solo dove è. I due non sono stati combinati.
+
+Specifica formale: [`ARCHITECTURE.md`](ARCHITECTURE.md) §15; report: [`PAPER.md`](PAPER.md) §6.8.
+
+**Protocollo.** Dataset a 365 giorni, griglia a 5 s, 12 punti di input, 13 orizzonti
+5–300 s, la ricetta del progetto, **25 epoche × 400 000 finestre = 10 M finestre per
+modello**, `torch.compile` spento. Split di test 2022-11-26 → 12-31, **le stesse 60 000
+finestre per ogni modello** (`eval_cross.py --split`), errore medio 3-D ECEF in metri. La mappa
+è appresa solo sui giorni di training (2022-01-01 → 10-20); validazione 2022-10-21 → 11-25.
+Config: `config_365d_12pt_bench.json` (AeroTraj-Ultra), `config_365d_12pt_atlas_bench.json`
+(AeroTraj-Atlas), una config per braccio dell'ablation in `results_atlas/configs/`. Budget
+pieno: `config_365d_atlas_1200k.json`.
+
+Cronologia:
+
+* **2026-11-12** — prima run del campo e sue ablation, seed 97.
+* **2026-11-13** — secondo seed (11), controllo di capacità (Ultra allargato), varianti
+  (sistema di riferimento dell'aereo, asse della velocità verticale, backbone largo + campo),
+  configurazione finale, run a budget pieno (150 epoche, 2,39 h, epoca migliore 143).
+
+**Risultati**
+
+(1) Due seed (`results_atlas/atlas_2seeds.json`), MDE in metri. «+ campo» = campo senza asse
+della quota e senza rilettura; AeroTraj-Atlas = campo + asse della quota + `refine`.
+
+| | AeroTraj-Ultra | + campo | AeroTraj-Atlas |
+|---|---:|---:|---:|
+| seed 97 | 1 091,5 | 903,1 | 846,5 |
+| seed 11 | 1 111,0 | 897,3 | 841,3 |
+| media dei seed | 1 101,2 | 900,2 | **843,9** |
+| vs AeroTraj-Ultra | — | −18,3 % | **−23,4 %** |
+
+Per seed: Atlas −22,4 % (seed 97) e −24,3 % (seed 11); campo −17,3 % e −19,2 %. Dispersione
+fra seed: 1,8 % per AeroTraj-Ultra, 0,6 % per AeroTraj-Atlas.
+
+(2) Per orizzonte, media dei due seed:
+
+| orizzonte | AeroTraj-Ultra | AeroTraj-Atlas | Δ |
+|---:|---:|---:|---:|
+| 5 s | 59,8 | 59,7 | −0,13 % |
+| 10 s | 64,9 | 64,5 | −0,69 % |
+| 15 s | 73,4 | 72,3 | −1,49 % |
+| 20 s | 86,5 | 84,2 | −2,67 % |
+| 30 s | 125,6 | 118,2 | −5,89 % |
+| 45 s | 213,9 | 191,7 | −10,37 % |
+| 60 s | 335,6 | 290,4 | −13,49 % |
+| 90 s | 657,9 | 543,0 | −17,46 % |
+| 120 s | 1 066,1 | 851,9 | −20,09 % |
+| 150 s | 1 543,4 | 1 205,2 | −21,91 % |
+| 180 s | 2 079,1 | 1 593,7 | −23,35 % |
+| 240 s | 3 299,6 | 2 461,1 | −25,41 % |
+| 300 s | 4 710,3 | 3 434,8 | −27,08 % |
+| media | 1 101,2 | 843,9 | −23,37 % |
+
+(3) Ablation, seed 97 (`results_atlas/ablation_s97.json`):
+
+| modello | MDE [m] | vs Ultra | parametri | s / epoca |
+|---|---:|---:|---:|---:|
+| AeroTraj-Ultra | 1 091,5 | — | 1 276 983 | 23,5 |
+| Ultra allargato a n_embd 288 (controllo di capacità) | 1 032,2 | −5,44 % | 4 968 807 | 41,8 |
+| Ultra + sistema dell'aereo | 1 108,8 | +1,59 % | 1 301 323 | 23,0 |
+| campo, 4 livelli (celle fino a 0,25°) | 949,6 | −13,00 % | 3 750 423 | 27,2 |
+| campo letto solo all'aereo (`ahead: false`) | 938,4 | −14,02 % | 7 949 335 | 25,5 |
+| **campo** (6 livelli, letto lungo il prior) | 903,1 | −17,26 % | 7 949 335 | 26,3 |
+| campo + sistema dell'aereo | 902,4 | −17,33 % | 7 973 675 | 26,7 |
+| campo, 7 livelli (celle fino a 0,031°, tabella 2^19) | 886,1 | −18,82 % | 16 340 247 | 29,1 |
+| campo + refine | 877,6 | −19,60 % | 7 977 847 | 29,3 |
+| largo + campo | 873,2 | −20,00 % | 11 780 263 | 47,0 |
+| campo + asse della quota | 865,2 | −20,73 % | 10 467 351 | 33,3 |
+| campo + assi quota e velocità verticale | 868,1 | −20,46 % | 11 958 551 | 39,4 |
+| **AeroTraj-Atlas** (campo + asse della quota + refine) | **846,5** | **−22,45 %** | 10 495 863 | 35,7 |
+
+(4) Dove sta il guadagno (`results_atlas/where_gain_s97.json`, Atlas contro Ultra, seed 97,
+`eval_where_gain.py`):
+
+| finestre | quota | Ultra | Atlas | Δ | Ultra 300 s | Atlas 300 s | Δ |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| tutte | 100,0 % | 1 091,5 | 846,5 | −22,4 % | 4 675,0 | 3 447,6 | −26,3 % |
+| quota < 3 km | 12,7 % | 2 825,2 | 1 979,7 | −29,9 % | 11 147,1 | 7 561,9 | −32,2 % |
+| quota 3–7,5 km | 19,9 % | 1 571,4 | 1 188,4 | −24,4 % | 6 941,9 | 4 888,0 | −29,6 % |
+| quota ≥ 7,5 km | 67,4 % | 623,5 | 532,3 | −14,6 % | 2 787,4 | 2 247,8 | −19,4 % |
+| virate > 15° entro 300 s | 20,1 % | 3 153,9 | 2 177,2 | −31,0 % | 13 810,5 | 8 967,0 | −35,1 % |
+| virate ≤ 15° | 79,9 % | 572,9 | 511,9 | −10,6 % | 2 377,6 | 2 059,5 | −13,4 % |
+| variazione di quota > 300 m | 50,4 % | 1 635,0 | 1 221,4 | −25,3 % | 7 002,0 | 4 968,4 | −29,0 % |
+| livellato (≤ 300 m) | 49,6 % | 540,3 | 466,2 | −13,7 % | 2 314,8 | 1 905,0 | −17,7 % |
+| rettilineo e livellato | 47,1 % | 411,2 | 375,9 | −8,6 % | 1 670,7 | 1 483,7 | −11,2 % |
+
+(«quota» nella seconda colonna è la quota di finestre.) Differenza appaiata delle medie per
+finestra: −245,0 m, intervallo bootstrap al 95 % [−253,6; −236,5]; il 57,6 % delle finestre
+migliora.
+
+(5) Budget pieno (`config_365d_atlas_1200k.json` = `config_365d_1200k.json` + il campo;
+150 epoche × 1,2 M finestre = 180 M, `torch.compile(reduce-overhead)`, un seed (97) per
+entrambi i modelli; `results_365_atlas/evaluation_summary.json`,
+`results_365_atlas/full_budget_vs_ultra.json`, `results_365_atlas/where_gain.json`).
+Test (nov-dic 2022, le stesse 60 000 finestre): **AeroTraj-Ultra 865,1 m → AeroTraj-Atlas
+723,3 m, −16,4 %**. Validazione: 889,4 m (epoca migliore 137) → 740,0 m (epoca migliore 143),
+−16,8 %. Nessun early stop; l'errore di validazione scendeva ancora lentamente alla fine
+(751,5 m all'epoca 100, 740,0 alla 143, 739,9 alla 150).
+
+| orizzonte | AeroTraj-Ultra | AeroTraj-Atlas | Δ |
+|---:|---:|---:|---:|
+| 5 s | 54,4 | 51,3 | −5,71 % |
+| 10 s | 57,2 | 53,4 | −6,75 % |
+| 15 s | 63,6 | 59,1 | −6,96 % |
+| 20 s | 74,5 | 68,6 | −7,84 % |
+| 30 s | 105,9 | 95,3 | −9,96 % |
+| 45 s | 177,9 | 155,5 | −12,58 % |
+| 60 s | 275,6 | 237,3 | −13,89 % |
+| 90 s | 533,1 | 452,9 | −15,04 % |
+| 120 s | 852,5 | 719,0 | −15,66 % |
+| 150 s | 1 221,9 | 1 026,3 | −16,01 % |
+| 180 s | 1 631,5 | 1 365,2 | −16,33 % |
+| 240 s | 2 557,9 | 2 116,8 | −17,24 % |
+| 300 s | 3 640,9 | 3 001,9 | −17,55 % |
+| media | 865,1 | 723,3 | −16,40 % |
+
+Per gruppo, a budget pieno: virate > 15° −19,3 % (2 253,3 → 1 818,5 m), virate ≤ 15°
+−13,2 %, quota < 3 km −17,0 %, ≥ 7,5 km −16,0 %, rettilineo e livellato −14,4 %
+(373,4 → 319,8 m). Differenza appaiata −141,8 m, intervallo al 95 % [−148,6; −134,7]; il
+62,5 % delle finestre migliora.
+
+(6) Costo di inferenza (RTX 4070, GPU inattiva, `FastPredictor`, input già sulla GPU;
+`bench_latency_field.py`, `results_atlas/latency.json`). Questo harness **non** include la
+copia host → device: i numeri si confrontano fra i due modelli, non con i 19,3–20,7 ms /
+2,8–6,5 ms di §6.10–§6.11, che la includevano.
+
+| | AeroTraj-Ultra | AeroTraj-Atlas |
+|---|---:|---:|
+| 1 aereo, eager | 17,4 ms | 42,2 ms (2,4×) |
+| 1 aereo, `torch.compile(reduce-overhead)` | 0,65 ms | 0,66 ms |
+| batch 4 096, eager | 54,4 ms (75 348 aerei/s) | 78,5 ms (52 172 aerei/s) |
+| batch 4 096, compilato | 41,1 ms (99 780 aerei/s) | 44,8 ms (91 355 aerei/s) |
+
+`torch.compile` non cambia la metrica di Atlas: 844,767 m eager, 844,766 m compilato su
+57 344 finestre di test (profilo per orizzonte entro 0,002 m; nessuna finestra si sposta di
+più di 100 m; `results_atlas/compile_quality.json`).
+
+**Letture**
+
+1. **Non sono i parametri.** 3,9× i parametri della rete (il backbone largo) comprano −5,4 %
+   a 1,8× il tempo di training; la mappa compra −17,3 % con 56 160 parametri di rete in più e
+   1,12× il tempo.
+2. **Leggere la mappa *davanti* conta.** Letta solo all'aereo vale 938,4 m, lungo il prior
+   903,1 m (−3,8 %, e −4,5 % a 300 s: 3 930,7 → 3 753,1 m).
+3. **La risoluzione ha rendimenti decrescenti.** 4 → 6 livelli −4,9 %, 6 → 7 livelli −1,9 %
+   per una mappa 2,3× più grande. Si tengono sei livelli.
+4. **Asse della quota e rilettura sono quasi additivi.** L'asse della quota vale −4,2 % sopra
+   il campo (903,1 → 865,2), la rilettura −2,8 % (903,1 → 877,6); insieme −6,3 % (846,5).
+   Entrambi superano la dispersione fra seed.
+5. **Il guadagno sta dove l'errore è intenzione**: virate e bassa quota (aree terminali);
+   è minimo in crociera rettilinea e livellata. Il guadagno cresce con l'orizzonte (−0,13 % a
+   5 s, −27,08 % a 300 s alla media dei due seed).
+6. **A budget pieno il guadagno relativo è minore** (−16,4 % contro −23,4 %): con 18× più
+   training il modello base impara implicitamente parte della geografia. Letta al contrario:
+   **Atlas con 10 M finestre (846,5 m, seed 97) è già sotto Ultra con 180 M (865,1 m)**. Ed è
+   migliore a **ogni** orizzonte, anche nella banda 5–30 s che le run a budget del benchmark
+   lasciavano intatta; per gruppo il guadagno è uniforme.
+7. **Negativo — il sistema di riferimento dell'aereo** (`model.track_frame`: la storia anche
+   in coordinate along-track / cross-track, più una seconda testa residua in quel sistema,
+   come frazione della distanza percorsa): da solo **+1,6 %**, peggio sugli orizzonti lunghi
+   (+2,2 % a 300 s); con il campo 902,4 contro 903,1 m, nessun guadagno. **Non adottato**:
+   resta nel codice come ablation documentata.
+8. **Negativo — l'asse della velocità verticale** (`n_vz`, per separare partenze e arrivi):
+   868,1 contro 865,2 m (+0,3 %), con più parametri e il 18 % di tempo in più. **Non
+   adottato**.
+9. **Il backbone largo con il campo** dà −3,3 % a 1,8× il tempo di training: lasciato come
+   opzione, non come default.
+10. **Negativo — la normalizzazione esatta** (difetto 1 qui sotto): AeroTraj-Ultra 1 091,5 →
+    1 095,6 m (+0,38 %), AeroTraj-Atlas 846,5 → 843,8 m (−0,32 %): nessun effetto, entrambi
+    dentro la dispersione fra seed (`results_atlas/norm_stats_ab.json`).
+
+**Difetti trovati lungo la strada** (già corretti nel codice)
+
+1. **Statistiche di normalizzazione calcolate in float32.** `data_pipeline.py` calcolava
+   `np.asarray(points).mean(axis=0)` su un array float32: lungo l'asse 0 NumPy tiene una somma
+   corrente in float32, che smette di crescere. Sui 242 M punti di training del set a 365
+   giorni la media di latitudine salvata è 4,58° contro i veri 48,85, la media della quota
+   141,7 contro 836,3 (unità di 10 m), la temperatura 35,4 K contro 235,7 K, la deviazione
+   standard di v_x 271,6 contro 542,6 km/h. L'errore cresce con la dimensione del dataset,
+   quindi ogni dataset aveva le sue costanti sbagliate. Correzione: `exact_norm_stats`
+   (float64, a blocchi) per i nuovi build; `python data_pipeline.py --config <cfg>
+   --exact-norm-stats` aggiunge `train_norm_stats_exact` a un dataset esistente **senza**
+   toccare le statistiche salvate; la chiave `data.norm_stats` le seleziona. Effetto misurato
+   nullo (lettura 10: la rete assorbe un riscalamento affine, e le posizioni entrano anche
+   attraverso il Gray-Code e le feature relative), quindi le statistiche salvate restano il
+   default e ogni run pubblicata resta riproducibile.
+2. **`eval_ckpt.py` non caricava i checkpoint precedenti alla parametrizzazione di `dt`**
+   (caricamento strict, due buffer del codec mancanti), compreso quello del comando di esempio
+   del README. Ora li carica e fallisce ancora sulle chiavi inattese.
+3. **Gli strumenti di valutazione non controllavano la lunghezza della finestra**: un
+   checkpoint addestrato con 12 punti valutato con una config a 24 punti riceveva 24 punti in
+   silenzio. `eval_cross.py` ed `eval_ckpt.py` ora danno a ogni modello gli ultimi
+   `inp_seq_len` punti.
+4. (Già documentato nella correzione dello studio della finestra, §6.14) modelli con finestre
+   di lunghezza diversa erano confrontati su finestre diverse.
+
+`test_conformance.py` (79 controlli) verifica il campo contro la propria tabella (sezione 10:
+con le opzioni spente i parametri sono quelli di AeroTraj-Ultra; i pesi di interpolazione
+sommano a uno anche fuori regione; l'asse della rotta è periodico; un nodo della griglia legge
+la propria riga; la testa nel sistema dell'aereo è nulla all'inizializzazione e un residuo
+puro along/cross-track sposta il punto solo lungo/trasversalmente) e le statistiche contro un
+riferimento in float64 (sezione 11).
+
+**Costo**: a budget del benchmark 35,7 s/epoca contro 23,5 (tabella 3, eager); a budget
+pieno 53,2 s/epoca contro 47,1 compilato (1,13×), **2,39 h contro 1,98 h**. In inferenza
+compilata il costo per un aereo è invariato (0,66 contro 0,65 ms); eager è 2,4×.
+
+**Limiti**
+
+* La mappa è specifica della **regione** su cui è appresa (il bounding box europeo) e del
+  **periodo**: la struttura delle rotte cambia (cicli AIRAC, flussi stagionali). Lo split di
+  test inizia 37 giorni dopo l'ultimo giorno di training e finisce 72 giorni dopo; oltre
+  quell'intervallo non si sa nulla. L'uso operativo richiede di riaddestrare la mappa
+  periodicamente; non testato.
+* 9,1 M dei 10,5 M parametri sono la mappa (circa 37 MB in float32).
+* Budget pieno: un seed per modello, un solo split di test. Lo split di marzo 2022 (790,2 m
+  per AeroTraj-Ultra) non è stato valutato perché il dataset a 90 giorni da cui proviene è
+  stato rimosso dal disco.
+* Latenza eager per un aereo 2,4×; compilata invariata.
+* Non combinato con la testa multi-ipotesi (con `refine` la combinazione solleva un errore:
+  non implementata) né con il retrieval; la calibrazione conformal non è stata rifatta per
+  Atlas.
+
+Comandi:
+
+```powershell
+& $PY run.py --config config_365d_12pt_atlas_bench.json --fresh --skip-baselines
+& $PY run.py --config config_365d_atlas_1200k.json --fresh --skip-baselines --compile reduce-overhead
+& $PY eval_cross.py --model "Ultra=config_365d_1200k.json=checkpoints_365_1200k/aerotraj_ultra_best.pt" `
+                    --model "Atlas=config_365d_atlas_1200k.json=checkpoints_365_atlas/aerotraj_ultra_best.pt" `
+                    --split "nov-dec=config_365d_1200k.json=test"
+& $PY eval_where_gain.py BASE.pt NEW.pt OUT.json
+& $PY bench_latency_field.py NAME=config.json=checkpoint.pt --out file.json
+```
+
 <!--RISULTATI-10S-->
 
 ---
@@ -1508,6 +1899,10 @@ modo e spiega perché l'IMM non batte il Kalman.
 - ✅ Benchmark contro 4 baseline (CV-Doppler, CV-least-squares, Deep LSTM, FlightBERT++ V2) + 2 ablation interne.
 - ✅ Addestramento **GPU** (RTX 4070), build dataset **parallelo e riprendibile**.
 - ✅ Grafici pubblicabili e CSV/JSON dei risultati + report comparativo automatico.
+- ✅ **AeroTraj-Atlas** (§6.15): AeroTraj-Ultra + un **campo dello spazio aereo** appreso (griglia hash
+  multi-risoluzione su posizione, rotta e quota) letto lungo il prior cinematico; chiave `model.airspace_field`.
+  Sullo split nov-dic a 365 giorni, budget pieno: **723,3 m contro 865,1 m (−16,4 %)**; budget del benchmark,
+  due seed: −23,4 %.
 
 **Limiti noti**
 - ⚠️ **Solo Europa** (bounding box `lon ∈ [−15,35]`, `lat ∈ [30,65]`). Con `pyopensky.trino` e credenziali
@@ -1527,6 +1922,11 @@ modo e spiega perché l'IMM non batte il Kalman.
 - ⚠️ `predict.py` dimostra solo l'inferenza su finestre già pre-processate: per l'uso operativo serve un wrapper che
   trasformi l'output di `pyopensky.rest` / `pyopensky.trino` nelle 9 feature (funzione di conversione già presente in
   `data_pipeline._process_raw_dataframe_to_5s_segments`).
+- ⚠️ **AeroTraj-Atlas**: la mappa è specifica della regione e del periodo di training (cicli AIRAC, flussi
+  stagionali; testata solo fino a 72 giorni dopo l'ultimo giorno di training, il ri-addestramento periodico non
+  è testato); 9,1 M dei 10,5 M parametri sono la mappa (~37 MB in float32); budget pieno con un solo seed e un
+  solo split; latenza eager per un aereo 2,4× (compilata invariata); non combinato con la testa multi-ipotesi
+  né con il retrieval, calibrazione conformal non rifatta.
 
 ---
 

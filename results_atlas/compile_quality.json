@@ -1,0 +1,10 @@
+{
+  "windows": 57344,
+  "eager_mde_m": 844.7666625976562,
+  "compiled_mde_m": 844.7664184570312,
+  "delta_pct": -2.9802322387695312e-05,
+  "per_horizon_max_abs_diff_m": 0.002197265625,
+  "per_window_diff_p50_m": 0.0,
+  "per_window_diff_p99_m": 0.0234375,
+  "share_above_100m": 0.0
+}
